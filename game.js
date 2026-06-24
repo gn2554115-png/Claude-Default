@@ -33,7 +33,6 @@ const PALM_RECHARGE_MS = 8000;
 const SPIRAL_COUNT = 8;
 const SPIRAL_DURATION = 0.6; // 秒
 const SPIRAL_BLADE_RADIUS = 12;
-const SPIRAL_BLADE_DAMAGE = Math.round(PALM_NOVA_DAMAGE * 0.6);
 const SPIRAL_SPIN = 9; // rad/秒
 
 const HURT_EFFECT_DURATION = 150; // ms
@@ -45,22 +44,136 @@ const ENEMY_TOUCH_DAMAGE = 8;
 const ENEMY_KNOCKBACK_RESIST = 0.85;
 const KILL_SCORE = 10;
 
-// 敵人變種：較大較慢、血厚的「悍敵」
+// 敵人變種：較大較慢、血厚的「悍敵」（疊加在任何小怪種類上的獨立強化）
 const ENEMY_BRUTE_HP_MULT = 2.4;
-const ENEMY_BRUTE_RADIUS = 24;
+const ENEMY_BRUTE_RADIUS_MULT = 1.5;
 const ENEMY_BRUTE_SPEED_MULT = 0.55;
 const ENEMY_BRUTE_TOUCH_MULT = 1.6;
 const ENEMY_BRUTE_SCORE_MULT = 2;
 
 // 關卡制難度：每 STAGE_DURATION_SEC 秒跳一級，離散調整而非連續內插
 const STAGE_DURATION_SEC = 45;
+const MIN_SPAWN_INTERVAL_MS = 220;
 const STAGE_CONFIGS = [
   { spawnInterval: 1400, hpMult: 1.0, bruteChance: 0.0, skyTint: "#3a2a4a" },
   { spawnInterval: 1100, hpMult: 1.15, bruteChance: 0.15, skyTint: "#4a2a3a" },
   { spawnInterval: 850, hpMult: 1.35, bruteChance: 0.22, skyTint: "#2a2a4a" },
   { spawnInterval: 650, hpMult: 1.55, bruteChance: 0.3, skyTint: "#1a1a3a" },
   { spawnInterval: 450, hpMult: 1.8, bruteChance: 0.35, skyTint: "#0a0a2a" },
+  { spawnInterval: 380, hpMult: 2.1, bruteChance: 0.4, skyTint: "#1a0a2a" },
+  { spawnInterval: 320, hpMult: 2.45, bruteChance: 0.45, skyTint: "#15001a" },
+  { spawnInterval: 260, hpMult: 2.85, bruteChance: 0.5, skyTint: "#0a0010" },
 ];
+
+// 小怪種類定義：每關場上同時最多 2 種一般小怪（boss／悍敵不計入此上限）
+const ENEMY_TYPE_DEFS = {
+  drifter: { hpMult: 1, speedMult: 1, touchMult: 1, radiusMult: 1, behavior: "chase" },
+  skitter: { hpMult: 0.55, speedMult: 1.6, touchMult: 0.8, radiusMult: 0.8, behavior: "zigzag" },
+  lurker: {
+    hpMult: 1.3,
+    speedMult: 1,
+    touchMult: 1.2,
+    radiusMult: 1.05,
+    behavior: "ambush",
+    triggerRadius: 140,
+    dashSpeedMult: 2.4,
+  },
+  volley: {
+    hpMult: 0.8,
+    speedMult: 0.65,
+    touchMult: 0.7,
+    radiusMult: 0.95,
+    behavior: "kiter",
+    keepDistance: 160,
+    fireIntervalMs: 1800,
+  },
+  juggernaut: { hpMult: 2.6, speedMult: 0.45, touchMult: 1.8, radiusMult: 1.4, behavior: "chase" },
+};
+
+// 每關出場的一般小怪 pool（最多 2 種，新種類加入時淘汰最舊的一種）
+const STAGE_NORMAL_TYPE_POOL = [
+  ["drifter"],
+  ["drifter", "skitter"],
+  ["skitter", "lurker"],
+  ["lurker", "volley"],
+  ["volley", "juggernaut"],
+  ["drifter", "juggernaut"],
+  ["skitter", "juggernaut"],
+  ["volley", "juggernaut"],
+];
+
+const ENEMY_VISUALS = {
+  drifter: { core: "#ff66cc", mid: "#9b30d9", edge: "#3a0a4d", glow: "#c040ff" },
+  skitter: { core: "#9dffb0", mid: "#2fae54", edge: "#0d3a1a", glow: "#3ad66a" },
+  lurker: { core: "#ffe48a", mid: "#b8860b", edge: "#3a2a05", glow: "#d9a30a" },
+  volley: { core: "#9adcff", mid: "#1f7fae", edge: "#0a2a3a", glow: "#3ad6ff" },
+  juggernaut: { core: "#ffaa55", mid: "#d9530a", edge: "#4d1a05", glow: "#ff6a00" },
+  boss: { core: "#ffffff", mid: "#ff3344", edge: "#330008", glow: "#ff2244" },
+};
+
+// 敵方彈道（遠程小怪 volley 專用）
+const ENEMY_PROJECTILE_SPEED = 150;
+const ENEMY_PROJECTILE_DAMAGE = 7;
+const ENEMY_PROJECTILE_RADIUS = 6;
+
+// Boss 關卡
+const BOSS_HP_MULT = 16;
+const BOSS_RADIUS = 42;
+const BOSS_TOUCH_MULT = 2.0;
+const BOSS_SCORE_MULT = 25;
+const BOSS_XP_MULT = 20;
+const BOSS_DROP_MULT = 10;
+const BOSS_ATTACK_INTERVAL_MS = 3200;
+const BOSS_SHOCK_RADIUS = 150;
+const BOSS_SHOCK_DAMAGE = 18;
+const BOSS_REPEAT_INTERVAL_SEC = 90;
+
+// 玩家成長帶動敵人強度：等級、技能總等級、封頂時間項三者相乘
+const POWER_LEVEL_RATE = 0.06;
+const POWER_SKILL_RATE = 0.05;
+const POWER_TIME_CAP_SEC = 600;
+const POWER_TIME_MAX_BONUS = 0.5;
+
+// 怪物掉落物（單一通用貨幣，須走過去拾取）
+const CURRENCY_DROP_CHANCE = 0.5;
+const CURRENCY_DROP_MIN = 1;
+const CURRENCY_DROP_MAX = 3;
+const CURRENCY_BRUTE_DROP_MULT = 3;
+const CURRENCY_ATTRACT_RADIUS = 36;
+const CURRENCY_ATTRACT_SPEED = 260;
+const CURRENCY_PICKUP_RADIUS = 16;
+const DROP_LIFETIME_SEC = 12;
+
+// 掌技／氣彈隨玩家等級成長（J/K 維持手動操作，但傷害不再寫死）
+const PALM_GROWTH_RATE = 0.08;
+const QI_GROWTH_RATE = 0.08;
+
+// 技能表（被動）：環身罡氣／破空擲／引氣術／既有自動攻擊
+const SKILL_BASE_COST = { orbit: 15, throw: 18, magnet: 12 };
+const SKILL_COST_GROWTH = 1.6;
+const ORBIT_BASE_COUNT = 2;
+const ORBIT_BASE_DAMAGE = 10;
+const ORBIT_RADIUS = 70;
+const ORBIT_BLADE_RADIUS = 11;
+const ORBIT_SPIN = 2.2; // rad/秒
+const ORBIT_HIT_COOLDOWN_MS = 500;
+const THROW_BASE_DAMAGE = 16;
+const THROW_BASE_INTERVAL_MS = 2200;
+const THROW_SPEED = 360;
+const THROW_TURN_RATE = 5;
+const THROW_RADIUS = 8;
+const THROW_BASE_PIERCE = 1;
+
+const SKILL_DEFS = [
+  { id: "homing", name: "鏢氣連射", baseDesc: "自動鎖定最近敵人發射氣彈（既有自動攻擊，透過一般升級卡強化）" },
+  { id: "orbit", name: "環身罡氣", baseDesc: "環繞身周持續傷害周圍敵人" },
+  { id: "throw", name: "破空擲", baseDesc: "定時擲出貫穿武器擊中最近敵人" },
+  { id: "magnet", name: "引氣術", baseDesc: "擴大內力珠的吸引範圍" },
+];
+
+function skillScale(level) {
+  return 1 + level * 0.22 + level * level * 0.01;
+}
 
 const XP_BASE_TO_NEXT = 20;
 const XP_GROWTH = 1.35;
@@ -169,11 +282,16 @@ const state = {
   characterId: CHARACTERS[0].id,
   player: null,
   enemies: [],
+  enemyProjectiles: [],
   projectiles: [],
   particles: [],
   damageTexts: [],
+  pickupTexts: [],
   shockwaves: [],
   spirals: [],
+  orbiters: [],
+  drops: [],
+  orbitHitMap: new Map(),
   score: 0,
   kills: 0,
   elapsed: 0,
@@ -185,6 +303,10 @@ const state = {
   shake: { time: 0, duration: 0.1, magnitude: 0 },
   upgradeChoices: [],
   pendingLevelUps: 0,
+  skillMenuOpen: false,
+  bossActive: false,
+  bossCyclesSpawned: 0,
+  bossRepeatTimer: 0,
 };
 
 function resetState(characterId) {
@@ -226,13 +348,28 @@ function resetState(characterId) {
     palmMaxCharges: PALM_MAX_CHARGES,
     palmRechargeTimer: 0,
     palmRadius: PALM_NOVA_RADIUS,
+
+    currency: 0,
+    orbitAngle: 0,
+    throwTimer: THROW_BASE_INTERVAL_MS,
+    skills: {
+      homing: { unlocked: true, level: 1 },
+      orbit: { unlocked: false, level: 0 },
+      throw: { unlocked: false, level: 0 },
+      magnet: { unlocked: false, level: 0 },
+    },
   };
   state.enemies = [];
+  state.enemyProjectiles = [];
   state.projectiles = [];
   state.particles = [];
   state.damageTexts = [];
+  state.pickupTexts = [];
   state.shockwaves = [];
   state.spirals = [];
+  state.orbiters = [];
+  state.drops = [];
+  state.orbitHitMap = new Map();
   state.score = 0;
   state.kills = 0;
   state.elapsed = 0;
@@ -248,12 +385,18 @@ function resetState(characterId) {
   state.shake.time = 0;
   state.upgradeChoices = [];
   state.pendingLevelUps = 0;
+  state.skillMenuOpen = false;
+  state.bossActive = false;
+  state.bossCyclesSpawned = 0;
+  state.bossRepeatTimer = 0;
 
   setBgmVolume(BGM_NORMAL_VOLUME);
   document.getElementById("game-over-screen").classList.add("hidden");
   const cardBox = document.getElementById("level-up-cards");
   cardBox.innerHTML = "";
   cardBox.classList.add("hidden");
+  const skillMenu = document.getElementById("skill-menu");
+  if (skillMenu) skillMenu.classList.add("hidden");
   updateUI();
 }
 
@@ -446,6 +589,95 @@ function drawDamageTexts() {
     ctx.shadowColor = "#000";
     ctx.shadowBlur = 4;
     ctx.fillText(`-${dtxt.value}`, dtxt.x, dtxt.y);
+  }
+  ctx.restore();
+}
+
+// ===== 怪物掉落物（內力珠，須走過去拾取，magnet 技能可擴大吸引半徑） =====
+function rollCurrencyDrop(e) {
+  const isBoss = e.type === "boss";
+  if (!isBoss && Math.random() >= CURRENCY_DROP_CHANCE) return;
+  let amount = CURRENCY_DROP_MIN + Math.floor(Math.random() * (CURRENCY_DROP_MAX - CURRENCY_DROP_MIN + 1));
+  if (e.isBrute) amount *= CURRENCY_BRUTE_DROP_MULT;
+  if (isBoss) amount *= BOSS_DROP_MULT;
+  spawnCurrencyDrop(e.x, e.y, amount);
+}
+
+function spawnCurrencyDrop(x, y, amount) {
+  state.drops.push({ x, y, amount, life: DROP_LIFETIME_SEC, bobPhase: Math.random() * Math.PI * 2 });
+}
+
+function updateDrops(dt) {
+  const p = state.player;
+  const magnetMult = p.skills.magnet.unlocked ? getSkillEffect("magnet", "radiusMult") : 1;
+  const attractRadius = CURRENCY_ATTRACT_RADIUS * magnetMult;
+
+  for (const drop of state.drops) {
+    drop.life -= dt;
+    drop.bobPhase += dt * 4;
+    const dx = p.x - drop.x;
+    const dy = p.y - drop.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    if (dist < attractRadius) {
+      drop.x += (dx / dist) * CURRENCY_ATTRACT_SPEED * dt;
+      drop.y += (dy / dist) * CURRENCY_ATTRACT_SPEED * dt;
+    }
+  }
+
+  state.drops = state.drops.filter((drop) => {
+    const dist = distance(p, drop);
+    if (dist < CURRENCY_PICKUP_RADIUS + p.radius) {
+      p.currency += drop.amount;
+      spawnPickupText(drop.x, drop.y, drop.amount);
+      playPickupSound();
+      return false;
+    }
+    return drop.life > 0;
+  });
+}
+
+function drawDrops() {
+  for (const drop of state.drops) {
+    const bob = Math.sin(drop.bobPhase) * 3;
+    ctx.save();
+    ctx.translate(drop.x, drop.y + bob);
+    const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, 8);
+    grad.addColorStop(0, "#fff7cc");
+    grad.addColorStop(0.6, "#ffd84d");
+    grad.addColorStop(1, "#b8860b");
+    ctx.fillStyle = grad;
+    ctx.shadowColor = "#ffd84d";
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(0, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function spawnPickupText(x, y, amount) {
+  state.pickupTexts.push({ x, y: y - 14, amount, life: 0.5, maxLife: 0.5, vy: -36 });
+}
+
+function updatePickupTexts(dt) {
+  for (const t of state.pickupTexts) {
+    t.y += t.vy * dt;
+    t.life -= dt;
+  }
+  state.pickupTexts = state.pickupTexts.filter((t) => t.life > 0);
+}
+
+function drawPickupTexts() {
+  ctx.save();
+  ctx.font = "bold 14px sans-serif";
+  ctx.textAlign = "center";
+  for (const t of state.pickupTexts) {
+    const alpha = Math.max(0, t.life / t.maxLife);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "#ffe48a";
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 4;
+    ctx.fillText(`+${t.amount}`, t.x, t.y);
   }
   ctx.restore();
 }
@@ -726,6 +958,10 @@ function playGameOverSound() {
   });
 }
 
+function playPickupSound() {
+  playTone({ freq: 660, freqEnd: 880, duration: 0.08, type: "sine", peak: 0.18 });
+}
+
 // ===== 升級卡（不暫停、邊玩邊選） =====
 function addXp(amount) {
   const p = state.player;
@@ -782,6 +1018,79 @@ function selectUpgrade(i) {
   container.classList.add("hidden");
 }
 
+// ===== 技能表（可暫停，花費怪物掉落物升級被動技能） =====
+function getSkillEffect(skillId, field) {
+  const skill = state.player.skills[skillId];
+  const level = skill ? skill.level : 0;
+  if (skillId === "orbit") {
+    if (field === "count") return ORBIT_BASE_COUNT + Math.floor(level / 2);
+    if (field === "damage") return Math.round(ORBIT_BASE_DAMAGE * skillScale(level));
+  }
+  if (skillId === "throw") {
+    if (field === "damage") return Math.round(THROW_BASE_DAMAGE * skillScale(level));
+    if (field === "interval") return Math.max(400, Math.round(THROW_BASE_INTERVAL_MS / skillScale(level)));
+  }
+  if (skillId === "magnet") {
+    if (field === "radiusMult") return 1 + level * 0.8;
+  }
+  return 0;
+}
+
+function getSkillUpgradeCost(skillId, level) {
+  const base = SKILL_BASE_COST[skillId] || 10;
+  return Math.round(base * Math.pow(SKILL_COST_GROWTH, level));
+}
+
+function trySkillUpgrade(skillId) {
+  const skill = state.player.skills[skillId];
+  if (!skill || skillId === "homing") return;
+  const cost = getSkillUpgradeCost(skillId, skill.level);
+  if (state.player.currency < cost) return;
+  state.player.currency -= cost;
+  skill.level += 1;
+  skill.unlocked = true;
+  playLevelUpSound();
+  renderSkillMenu();
+  updateUI();
+}
+
+function toggleSkillMenu() {
+  if (!state.started || state.gameOver) return;
+  state.skillMenuOpen = !state.skillMenuOpen;
+  const menu = document.getElementById("skill-menu");
+  if (state.skillMenuOpen) {
+    renderSkillMenu();
+    menu.classList.remove("hidden");
+  } else {
+    menu.classList.add("hidden");
+  }
+}
+
+function renderSkillMenu() {
+  document.getElementById("skill-menu-currency").textContent = `內力珠: ${state.player.currency}`;
+  const list = document.getElementById("skill-menu-list");
+  list.innerHTML = "";
+  SKILL_DEFS.forEach((def) => {
+    const skill = state.player.skills[def.id];
+    const row = document.createElement("div");
+    row.className = "skill-row";
+    if (def.id === "homing") {
+      row.innerHTML = `<span class="skill-name">${def.name}</span><span class="skill-desc">${def.baseDesc}</span>`;
+    } else {
+      const cost = getSkillUpgradeCost(def.id, skill.level);
+      const lvlText = skill.unlocked ? `Lv.${skill.level}` : "未習得";
+      row.innerHTML = `<span class="skill-name">${def.name} <span class="skill-level">${lvlText}</span></span><span class="skill-desc">${def.baseDesc}</span><button class="skill-buy-btn">花費 ${cost}</button>`;
+      const btn = row.querySelector(".skill-buy-btn");
+      btn.disabled = state.player.currency < cost;
+      btn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        trySkillUpgrade(def.id);
+      });
+    }
+    list.appendChild(row);
+  });
+}
+
 // ===== 輸入處理 =====
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
@@ -793,6 +1102,16 @@ window.addEventListener("keydown", (e) => {
     if (k === "r") resetAndStart();
     return;
   }
+
+  if (k === "p") {
+    toggleSkillMenu();
+    return;
+  }
+  if (k === "escape") {
+    if (state.skillMenuOpen) toggleSkillMenu();
+    return;
+  }
+  if (state.skillMenuOpen) return;
 
   if (state.upgradeChoices.length > 0 && (k === "1" || k === "2" || k === "3")) {
     selectUpgrade(Number(k) - 1);
@@ -899,7 +1218,7 @@ function spawnAutoFireBurst(p, angle) {
       life: 0.12,
       maxLife: 0.12,
       size: 1.5 + Math.random() * 1.5,
-      color: "rgba(58,214,255,0.9)",
+      color: "rgba(255,138,58,0.9)",
       type: "muzzle",
       glow: true,
     });
@@ -908,6 +1227,7 @@ function spawnAutoFireBurst(p, angle) {
 
 function updateAutoAttack(dt) {
   const p = state.player;
+  if (!p.skills.homing.unlocked) return;
   p.autoAtkTimer -= dt * 1000;
   if (p.autoAtkTimer > 0) return;
 
@@ -919,7 +1239,12 @@ function updateAutoAttack(dt) {
 
   p.autoAtkTimer = p.atkInterval;
   spawnAutoFireBurst(p, Math.atan2(target.y - p.y, target.x - p.x));
-  fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS, "auto");
+  fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS, "homing");
+}
+
+function getQiDamage() {
+  const p = state.player;
+  return Math.round(QI_DAMAGE * (1 + (p.level - 1) * QI_GROWTH_RATE));
 }
 
 function tryQiAttack() {
@@ -929,9 +1254,10 @@ function tryQiAttack() {
   p.qiCooldownUntil = now + QI_COOLDOWN;
   playQiFireSound();
 
+  const damage = getQiDamage();
   const target = findNearestEnemy(p.x, p.y);
   if (target) {
-    fireHomingVolley(p, target, 1, QI_DAMAGE, QI_SPEED, QI_TURN_RATE, QI_RADIUS, "qi");
+    fireHomingVolley(p, target, 1, damage, QI_SPEED, QI_TURN_RATE, QI_RADIUS, "qi");
   } else {
     state.projectiles.push({
       x: p.x + p.facing * (p.w / 2),
@@ -939,7 +1265,7 @@ function tryQiAttack() {
       vx: p.facing * QI_SPEED,
       vy: 0,
       radius: QI_RADIUS,
-      damage: QI_DAMAGE,
+      damage,
       homing: false,
       kind: "qi",
       pierceRemaining: p.pierceCount || 0,
@@ -960,18 +1286,28 @@ function tryPalmAttack() {
   }
 }
 
+function getPalmDamage() {
+  const p = state.player;
+  return Math.round(PALM_NOVA_DAMAGE * (1 + (p.level - 1) * PALM_GROWTH_RATE));
+}
+
+function getSpiralBladeDamage() {
+  return Math.round(getPalmDamage() * 0.6);
+}
+
 function palmNova(p) {
   triggerShake(0.25, 14);
   playPalmNovaSound();
   spawnShockwave(p.x, p.y, p.palmRadius);
   spawnExplosion(p.x, p.y, "rgba(58,214,255,0.9)", 20);
 
+  const damage = getPalmDamage();
   let hitAny = false;
   for (const enemy of state.enemies) {
     const d = distance(p, enemy);
     if (d < p.palmRadius + enemy.radius) {
-      applyDamage(enemy, PALM_NOVA_DAMAGE);
-      spawnDamageText(enemy.x, enemy.y - enemy.radius, PALM_NOVA_DAMAGE);
+      applyDamage(enemy, damage);
+      spawnDamageText(enemy.x, enemy.y - enemy.radius, damage);
       const ang = Math.atan2(enemy.y - p.y, enemy.x - p.x) || 0;
       enemy.knockVx = Math.cos(ang) * PALM_NOVA_KNOCKBACK;
       enemy.knockVy = Math.sin(ang) * PALM_NOVA_KNOCKBACK;
@@ -1002,6 +1338,7 @@ function palmSpiral(p) {
 
 function updateSpirals(dt) {
   const p = state.player;
+  const damage = getSpiralBladeDamage();
   for (const s of state.spirals) {
     s.life -= dt;
     const t = 1 - Math.max(0, s.life / s.maxLife);
@@ -1013,8 +1350,8 @@ function updateSpirals(dt) {
     for (const enemy of state.enemies) {
       if (s.hitSet.has(enemy) || enemy.hp <= 0) continue;
       if (distance(s, enemy) < SPIRAL_BLADE_RADIUS + enemy.radius) {
-        applyDamage(enemy, SPIRAL_BLADE_DAMAGE);
-        spawnDamageText(enemy.x, enemy.y - enemy.radius, SPIRAL_BLADE_DAMAGE);
+        applyDamage(enemy, damage);
+        spawnDamageText(enemy.x, enemy.y - enemy.radius, damage);
         const ang = Math.atan2(enemy.y - p.y, enemy.x - p.x) || 0;
         enemy.knockVx = Math.cos(ang) * (PALM_NOVA_KNOCKBACK * 0.6);
         enemy.knockVy = Math.sin(ang) * (PALM_NOVA_KNOCKBACK * 0.6);
@@ -1060,42 +1397,123 @@ function updatePalmRecharge(dt) {
   }
 }
 
-// ===== 敵人邏輯 =====
-function spawnEnemy() {
-  const margin = 40;
-  const side = Math.floor(Math.random() * 4); // 0 上 1 右 2 下 3 左
-  let x;
-  let y;
-  if (side === 0) {
-    x = Math.random() * CANVAS_W;
-    y = -margin;
-  } else if (side === 1) {
-    x = CANVAS_W + margin;
-    y = Math.random() * CANVAS_H;
-  } else if (side === 2) {
-    x = Math.random() * CANVAS_W;
-    y = CANVAS_H + margin;
-  } else {
-    x = -margin;
-    y = Math.random() * CANVAS_H;
+// ===== 被動技能：環身罡氣（環繞）／破空擲（投擲） =====
+function updateOrbiters(dt) {
+  const p = state.player;
+  if (!p.skills.orbit.unlocked) {
+    state.orbiters = [];
+    return;
+  }
+  const count = getSkillEffect("orbit", "count");
+  if (state.orbiters.length !== count) {
+    state.orbiters = Array.from({ length: count }, (_, i) => ({
+      angleOffset: (Math.PI * 2 * i) / count,
+      x: p.x,
+      y: p.y,
+    }));
+  }
+  p.orbitAngle += ORBIT_SPIN * dt;
+  for (const blade of state.orbiters) {
+    blade.x = p.x + Math.cos(p.orbitAngle + blade.angleOffset) * ORBIT_RADIUS;
+    blade.y = p.y + Math.sin(p.orbitAngle + blade.angleOffset) * ORBIT_RADIUS;
   }
 
+  const damage = getSkillEffect("orbit", "damage");
+  const now = performance.now();
+  for (const enemy of state.enemies) {
+    const lastHit = state.orbitHitMap.get(enemy) || 0;
+    if (now - lastHit < ORBIT_HIT_COOLDOWN_MS) continue;
+    for (const blade of state.orbiters) {
+      if (distance(blade, enemy) < ORBIT_BLADE_RADIUS + enemy.radius) {
+        applyDamage(enemy, damage);
+        spawnDamageText(enemy.x, enemy.y - enemy.radius, damage);
+        state.orbitHitMap.set(enemy, now);
+        playHitSound();
+        break;
+      }
+    }
+  }
+}
+
+function drawOrbiters() {
+  for (const blade of state.orbiters) {
+    ctx.save();
+    ctx.translate(blade.x, blade.y);
+    ctx.fillStyle = "#ffd84d";
+    ctx.shadowColor = "#ff8a3a";
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(0, 0, ORBIT_BLADE_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function updateThrowSkill(dt) {
+  const p = state.player;
+  if (!p.skills.throw.unlocked) return;
+  p.throwTimer -= dt * 1000;
+  if (p.throwTimer > 0) return;
+
+  const target = findNearestEnemy(p.x, p.y);
+  if (!target) {
+    p.throwTimer = 100; // 場上無敵人時稍後再檢查
+    return;
+  }
+  p.throwTimer = getSkillEffect("throw", "interval");
+  const damage = getSkillEffect("throw", "damage");
+  fireHomingVolley(p, target, 1, damage, THROW_SPEED, THROW_TURN_RATE, THROW_RADIUS, "throw");
+  state.projectiles[state.projectiles.length - 1].pierceRemaining += THROW_BASE_PIERCE;
+}
+
+// ===== 敵人邏輯 =====
+// 玩家成長帶動敵人強度：等級、技能總等級、封頂時間項三者相乘
+function getPowerScaleFactor() {
+  const p = state.player;
+  let skillLevelSum = 0;
+  for (const id in p.skills) skillLevelSum += p.skills[id].level;
+  const levelFactor = 1 + (p.level - 1) * POWER_LEVEL_RATE;
+  const skillFactor = 1 + skillLevelSum * POWER_SKILL_RATE;
+  const timeFactor =
+    1 + (Math.min(state.elapsed, POWER_TIME_CAP_SEC) / POWER_TIME_CAP_SEC) * POWER_TIME_MAX_BONUS;
+  return levelFactor * skillFactor * timeFactor;
+}
+
+function pickSpawnEdgePoint(margin) {
+  const side = Math.floor(Math.random() * 4); // 0 上 1 右 2 下 3 左
+  if (side === 0) return { x: Math.random() * CANVAS_W, y: -margin };
+  if (side === 1) return { x: CANVAS_W + margin, y: Math.random() * CANVAS_H };
+  if (side === 2) return { x: Math.random() * CANVAS_W, y: CANVAS_H + margin };
+  return { x: -margin, y: Math.random() * CANVAS_H };
+}
+
+function spawnEnemy() {
+  const { x, y } = pickSpawnEdgePoint(40);
+
   const stageConfig = STAGE_CONFIGS[state.stage];
-  const baseHp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult);
+  const pool = STAGE_NORMAL_TYPE_POOL[state.stage];
+  const baseType = pool[Math.floor(Math.random() * pool.length)];
+  const typeDef = ENEMY_TYPE_DEFS[baseType];
+  const powerScale = getPowerScaleFactor();
 
   const isBrute = Math.random() < stageConfig.bruteChance;
-  const type = isBrute ? "brute" : "normal";
-  const radius = isBrute ? ENEMY_BRUTE_RADIUS : ENEMY_RADIUS;
-  const hp = isBrute ? Math.round(baseHp * ENEMY_BRUTE_HP_MULT) : baseHp;
-  const speed = isBrute ? ENEMY_SPEED * ENEMY_BRUTE_SPEED_MULT : ENEMY_SPEED;
-  const touchDamage = isBrute ? Math.round(ENEMY_TOUCH_DAMAGE * ENEMY_BRUTE_TOUCH_MULT) : ENEMY_TOUCH_DAMAGE;
-  const killScore = isBrute ? KILL_SCORE * ENEMY_BRUTE_SCORE_MULT : KILL_SCORE;
-  const killXp = isBrute ? KILL_XP * ENEMY_BRUTE_SCORE_MULT : KILL_XP;
+  const baseHp = ENEMY_MAX_HP * stageConfig.hpMult * typeDef.hpMult * powerScale;
+  const hp = Math.round(isBrute ? baseHp * ENEMY_BRUTE_HP_MULT : baseHp);
+  const radius = Math.round(ENEMY_RADIUS * typeDef.radiusMult * (isBrute ? ENEMY_BRUTE_RADIUS_MULT : 1));
+  const speed = ENEMY_SPEED * typeDef.speedMult * (isBrute ? ENEMY_BRUTE_SPEED_MULT : 1);
+  const touchDamage = Math.round(
+    ENEMY_TOUCH_DAMAGE * typeDef.touchMult * (isBrute ? ENEMY_BRUTE_TOUCH_MULT : 1) * (1 + (powerScale - 1) * 0.4)
+  );
+  const killScore = Math.round(KILL_SCORE * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1));
+  const killXp = Math.round(KILL_XP * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1));
 
   state.enemies.push({
     x,
     y,
-    type,
+    type: "normal",
+    baseType,
+    behavior: typeDef.behavior,
+    isBrute,
     radius,
     hp,
     maxHp: hp,
@@ -1108,14 +1526,49 @@ function spawnEnemy() {
     knockVx: 0,
     knockVy: 0,
     knockUntil: 0,
+    zigzagPhase: Math.random() * Math.PI * 2,
+    ambushTriggered: typeDef.behavior !== "ambush",
+    fireTimer: typeDef.fireIntervalMs ? Math.random() * typeDef.fireIntervalMs : 0,
   });
 }
 
-function getEnemySpawnInterval() {
-  return STAGE_CONFIGS[state.stage].spawnInterval;
+function spawnBoss(stageIndex) {
+  const { x, y } = pickSpawnEdgePoint(60);
+  const stageConfig = STAGE_CONFIGS[stageIndex];
+  const powerScale = getPowerScaleFactor();
+  const hp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult * BOSS_HP_MULT * powerScale);
+
+  state.enemies.push({
+    x,
+    y,
+    type: "boss",
+    baseType: "boss",
+    behavior: "chase",
+    isBrute: false,
+    radius: BOSS_RADIUS,
+    hp,
+    maxHp: hp,
+    speed: ENEMY_SPEED * 0.6,
+    touchDamage: Math.round(ENEMY_TOUCH_DAMAGE * BOSS_TOUCH_MULT),
+    killScore: KILL_SCORE * BOSS_SCORE_MULT,
+    killXp: KILL_XP * BOSS_XP_MULT,
+    hurtUntil: 0,
+    particleTimer: 0,
+    knockVx: 0,
+    knockVy: 0,
+    knockUntil: 0,
+    attackTimer: BOSS_ATTACK_INTERVAL_MS,
+  });
+  state.bossActive = true;
+  triggerShake(0.3, 12);
 }
 
-function updateStage() {
+function getEnemySpawnInterval() {
+  const base = STAGE_CONFIGS[state.stage].spawnInterval;
+  return Math.max(MIN_SPAWN_INTERVAL_MS, Math.round(base / getPowerScaleFactor()));
+}
+
+function updateStage(dt) {
   const nextStage = Math.min(
     Math.floor(state.elapsed / STAGE_DURATION_SEC),
     STAGE_CONFIGS.length - 1
@@ -1124,6 +1577,21 @@ function updateStage() {
     state.stage = nextStage;
     console.log(`[stage] entering stage ${nextStage + 1}`);
     triggerShake(0.15, 6);
+    if (nextStage >= 1 && !state.bossActive) {
+      spawnBoss(nextStage);
+      state.bossCyclesSpawned += 1;
+      state.bossRepeatTimer = 0;
+    }
+  }
+
+  // 最終關卡之後，每隔一段時間再次觸發 boss，讓無限模式持續有節點
+  if (state.stage === STAGE_CONFIGS.length - 1 && !state.bossActive) {
+    state.bossRepeatTimer += dt;
+    if (state.bossRepeatTimer >= BOSS_REPEAT_INTERVAL_SEC) {
+      spawnBoss(state.stage);
+      state.bossCyclesSpawned += 1;
+      state.bossRepeatTimer = 0;
+    }
   }
 }
 
@@ -1146,23 +1614,76 @@ function updateEnemies(dt) {
       e.y += e.knockVy * dt;
       e.knockVx *= ENEMY_KNOCKBACK_RESIST;
       e.knockVy *= ENEMY_KNOCKBACK_RESIST;
+      continue;
+    }
+
+    const dx = p.x - e.x;
+    const dy = p.y - e.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = dx / dist;
+    const ny = dy / dist;
+
+    if (e.type === "boss") {
+      e.x += nx * e.speed * dt;
+      e.y += ny * e.speed * dt;
+      e.attackTimer -= dt * 1000;
+      if (e.attackTimer <= 0) {
+        e.attackTimer = BOSS_ATTACK_INTERVAL_MS;
+        spawnShockwave(e.x, e.y, BOSS_SHOCK_RADIUS);
+        triggerShake(0.25, 12);
+        if (dist < BOSS_SHOCK_RADIUS + p.radius && now > p.invulnUntil) {
+          applyDamage(p, BOSS_SHOCK_DAMAGE);
+          p.invulnUntil = now + PLAYER_IFRAME_MS;
+          playHurtSound();
+        }
+      }
+    } else if (e.behavior === "zigzag") {
+      e.zigzagPhase += dt * 8;
+      const ang = Math.atan2(ny, nx) + Math.sin(e.zigzagPhase) * 0.6;
+      e.x += Math.cos(ang) * e.speed * dt;
+      e.y += Math.sin(ang) * e.speed * dt;
+    } else if (e.behavior === "ambush") {
+      if (!e.ambushTriggered && dist < ENEMY_TYPE_DEFS.lurker.triggerRadius) {
+        e.ambushTriggered = true;
+      }
+      if (e.ambushTriggered) {
+        const dashSpeed = e.speed * ENEMY_TYPE_DEFS.lurker.dashSpeedMult;
+        e.x += nx * dashSpeed * dt;
+        e.y += ny * dashSpeed * dt;
+      }
+    } else if (e.behavior === "kiter") {
+      const keepDistance = ENEMY_TYPE_DEFS.volley.keepDistance;
+      if (dist > keepDistance + 20) {
+        e.x += nx * e.speed * dt;
+        e.y += ny * e.speed * dt;
+      } else if (dist < keepDistance - 20) {
+        e.x -= nx * e.speed * dt;
+        e.y -= ny * e.speed * dt;
+      }
+      e.fireTimer -= dt * 1000;
+      if (e.fireTimer <= 0) {
+        e.fireTimer = ENEMY_TYPE_DEFS.volley.fireIntervalMs;
+        spawnEnemyProjectile(e, nx, ny);
+      }
     } else {
-      const dx = p.x - e.x;
-      const dy = p.y - e.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      e.x += (dx / dist) * e.speed * dt;
-      e.y += (dy / dist) * e.speed * dt;
+      e.x += nx * e.speed * dt;
+      e.y += ny * e.speed * dt;
     }
   }
 
-  // 先清除被打死的敵人：加分、加經驗、爆炸特效
+  // 先清除被打死的敵人：加分、加經驗、爆炸特效、掉落物
   state.enemies = state.enemies.filter((e) => {
     if (e.hp <= 0) {
       state.score += e.killScore;
       state.kills += 1;
-      spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)", 20);
+      spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)", e.type === "boss" ? 40 : 20);
       playKillSound();
       addXp(e.killXp);
+      rollCurrencyDrop(e);
+      if (e.type === "boss") {
+        state.bossActive = false;
+        state.bossRepeatTimer = 0;
+      }
       return false;
     }
     return true;
@@ -1186,6 +1707,56 @@ function updateEnemies(dt) {
       playHurtSound();
       damaged = true;
     }
+  }
+}
+
+// ===== 敵方彈道（遠程小怪 volley 專用） =====
+function spawnEnemyProjectile(e, nx, ny) {
+  state.enemyProjectiles.push({
+    x: e.x,
+    y: e.y,
+    vx: nx * ENEMY_PROJECTILE_SPEED,
+    vy: ny * ENEMY_PROJECTILE_SPEED,
+    radius: ENEMY_PROJECTILE_RADIUS,
+    damage: ENEMY_PROJECTILE_DAMAGE,
+  });
+}
+
+function updateEnemyProjectiles(dt) {
+  const p = state.player;
+  const now = performance.now();
+  for (const proj of state.enemyProjectiles) {
+    proj.x += proj.vx * dt;
+    proj.y += proj.vy * dt;
+  }
+  state.enemyProjectiles = state.enemyProjectiles.filter((proj) => {
+    if (circleHit(proj, p)) {
+      if (now > p.invulnUntil) {
+        applyDamage(p, proj.damage);
+        p.invulnUntil = now + PLAYER_IFRAME_MS;
+        triggerShake(0.1, 6);
+        playHurtSound();
+      }
+      return false;
+    }
+    return proj.x > -50 && proj.x < CANVAS_W + 50 && proj.y > -50 && proj.y < CANVAS_H + 50;
+  });
+}
+
+function drawEnemyProjectiles() {
+  for (const proj of state.enemyProjectiles) {
+    ctx.save();
+    ctx.translate(proj.x, proj.y);
+    const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, proj.radius);
+    grad.addColorStop(0, "#bfe9ff");
+    grad.addColorStop(1, "#1f7fae");
+    ctx.fillStyle = grad;
+    ctx.shadowColor = "#3ad6ff";
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(0, 0, proj.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -1291,78 +1862,6 @@ function startGameWithCharacter(id) {
   updateActionButtonLabels();
   state.started = true;
   unlockAudio();
-  attemptAutoFullscreen();
-}
-
-// ===== 全螢幕 =====
-function isFullscreenSupported() {
-  const el = document.documentElement;
-  return Boolean(el.requestFullscreen || el.webkitRequestFullscreen);
-}
-
-let fullscreenHintTimer = null;
-function showFullscreenFallbackMessage(text) {
-  const hint = document.getElementById("fullscreen-hint");
-  if (!hint) return;
-  hint.textContent = text;
-  hint.classList.remove("hidden");
-  if (fullscreenHintTimer) clearTimeout(fullscreenHintTimer);
-  fullscreenHintTimer = setTimeout(() => {
-    hint.classList.add("hidden");
-  }, 2200);
-}
-
-function toggleFullscreen() {
-  const isFs = document.fullscreenElement || document.webkitFullscreenElement;
-  if (isFs) {
-    const exit = document.exitFullscreen || document.webkitExitFullscreen;
-    if (exit) {
-      Promise.resolve(exit.call(document))
-        .then(() => console.log("[fullscreen] exited"))
-        .catch((err) => console.warn("[fullscreen] exit failed", err));
-    }
-    return;
-  }
-
-  if (!isFullscreenSupported()) {
-    console.warn("[fullscreen] not supported in this browser");
-    showFullscreenFallbackMessage("此瀏覽器不支援全螢幕");
-    return;
-  }
-
-  const el = document.documentElement;
-  const request = el.requestFullscreen || el.webkitRequestFullscreen;
-  try {
-    Promise.resolve(request.call(el))
-      .then(() => console.log("[fullscreen] entered"))
-      .catch((err) => {
-        console.warn("[fullscreen] request rejected", err);
-        showFullscreenFallbackMessage("全螢幕請求被拒絕");
-      });
-  } catch (err) {
-    console.warn("[fullscreen] request threw", err);
-    showFullscreenFallbackMessage("無法進入全螢幕");
-  }
-}
-
-function attemptAutoFullscreen() {
-  const el = document.documentElement;
-  const request = el.requestFullscreen || el.webkitRequestFullscreen;
-  if (!request) {
-    console.log("[fullscreen] auto attempt skipped: unsupported");
-    return;
-  }
-  try {
-    const result = request.call(el);
-    if (result && result.catch) {
-      result
-        .then(() => console.log("[fullscreen] auto entered"))
-        .catch((err) => console.log("[fullscreen] auto attempt failed", err));
-    }
-  } catch (err) {
-    // 部分瀏覽器（如 iOS Safari）不支援全螢幕 API，靜默忽略
-    console.log("[fullscreen] auto attempt threw", err);
-  }
 }
 
 // ===== UI 更新 =====
@@ -1404,6 +1903,16 @@ function updateUI() {
   }
   for (let i = 0; i < pipRow.children.length; i++) {
     pipRow.children[i].classList.toggle("filled", i < p.palmCharges);
+  }
+
+  const boss = state.enemies.find((e) => e.type === "boss");
+  const bossBarBg = document.getElementById("boss-hp-bar-bg");
+  if (boss) {
+    bossBarBg.classList.remove("hidden");
+    const pct = Math.max(0, boss.hp / boss.maxHp) * 100;
+    document.getElementById("boss-hp-bar-fill").style.width = `${pct}%`;
+  } else {
+    bossBarBg.classList.add("hidden");
   }
 }
 
@@ -1570,7 +2079,8 @@ function drawPlayer() {
 
 function drawEnemy(e) {
   const hurt = isHurt(e);
-  const isBrute = e.type === "brute";
+  const visual = ENEMY_VISUALS[e.baseType] || ENEMY_VISUALS.drifter;
+  const isBoss = e.type === "boss";
 
   ctx.save();
   ctx.translate(e.x, e.y);
@@ -1578,23 +2088,27 @@ function drawEnemy(e) {
   const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, e.radius);
   if (hurt) {
     grad.addColorStop(0, "#ffffff");
-    grad.addColorStop(1, isBrute ? "#ff5500" : "#ff2222");
-  } else if (isBrute) {
-    grad.addColorStop(0, "#ffaa55");
-    grad.addColorStop(0.6, "#d9530a");
-    grad.addColorStop(1, "#4d1a05");
+    grad.addColorStop(1, e.isBrute || isBoss ? "#ff5500" : "#ff2222");
   } else {
-    grad.addColorStop(0, "#ff66cc");
-    grad.addColorStop(0.6, "#9b30d9");
-    grad.addColorStop(1, "#3a0a4d");
+    grad.addColorStop(0, visual.core);
+    grad.addColorStop(0.6, visual.mid);
+    grad.addColorStop(1, visual.edge);
   }
   ctx.fillStyle = grad;
-  ctx.shadowColor = isBrute ? "#ff6a00" : "#c040ff";
-  ctx.shadowBlur = isBrute ? 20 : 14;
+  ctx.shadowColor = visual.glow;
+  ctx.shadowBlur = isBoss ? 28 : e.isBrute ? 20 : 14;
   ctx.beginPath();
   ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
+
+  if (e.isBrute) {
+    ctx.strokeStyle = "#ff6a00";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius + 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 
   // 小血條
   const barW = e.radius * 2;
@@ -1611,34 +2125,18 @@ function drawProjectile(proj) {
   ctx.translate(proj.x, proj.y);
   ctx.rotate(Math.atan2(proj.vy, proj.vx));
 
-  const isQi = proj.kind === "qi";
-
-  if (isQi) {
-    const len = proj.radius * 3.6;
-    const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
-    grad.addColorStop(0, "rgba(255,138,58,0)");
-    grad.addColorStop(0.6, "#ffd84d");
-    grad.addColorStop(1, "#ff8a3a");
-    ctx.fillStyle = grad;
-    ctx.shadowColor = "#ff8a3a";
-    ctx.shadowBlur = 22;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, len / 2, proj.radius, 0, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    // 鏢狀細長菱形剪影，與氣功的發光橢圓彈頭做形狀區分
-    const len = proj.radius * 3.2;
-    ctx.fillStyle = "#3ad6ff";
-    ctx.shadowColor = "#3ad6ff";
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.moveTo(len / 2, 0);
-    ctx.lineTo(-len / 4, -proj.radius * 0.55);
-    ctx.lineTo(-len / 2, 0);
-    ctx.lineTo(-len / 4, proj.radius * 0.55);
-    ctx.closePath();
-    ctx.fill();
-  }
+  // homing／qi／throw 皆共用同一套黃橙發光橢圓視覺
+  const len = proj.radius * 3.6;
+  const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
+  grad.addColorStop(0, "rgba(255,138,58,0)");
+  grad.addColorStop(0.6, "#ffd84d");
+  grad.addColorStop(1, "#ff8a3a");
+  ctx.fillStyle = grad;
+  ctx.shadowColor = "#ff8a3a";
+  ctx.shadowBlur = 22;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, len / 2, proj.radius, 0, 0, Math.PI * 2);
+  ctx.fill();
 
   ctx.restore();
 }
@@ -1713,13 +2211,17 @@ function render() {
   }
 
   drawBackground();
+  drawDrops();
   for (const e of state.enemies) drawEnemy(e);
+  drawEnemyProjectiles();
   drawParticles();
   drawShockwaves();
   for (const proj of state.projectiles) drawProjectile(proj);
   drawSpirals();
+  drawOrbiters();
   drawPlayer();
   drawDamageTexts();
+  drawPickupTexts();
 
   ctx.restore();
 
@@ -1848,7 +2350,7 @@ function bindActionButton(btn, triggerFn) {
     if (!state.started) return;
     if (state.gameOver) {
       resetAndStart();
-    } else {
+    } else if (!state.skillMenuOpen) {
       triggerFn();
     }
   });
@@ -1863,17 +2365,27 @@ function bindActionButton(btn, triggerFn) {
 
 // ===== 主迴圈 =====
 function update(dt, timestamp) {
+  if (state.skillMenuOpen) {
+    updateUI();
+    return;
+  }
+
   state.elapsed += dt;
-  updateStage();
+  updateStage(dt);
   updatePlayer(dt);
   updateAutoAttack(dt);
+  updateOrbiters(dt);
+  updateThrowSkill(dt);
   updatePalmRecharge(dt);
   updateEnemySpawning(timestamp);
   updateEnemies(dt);
+  updateEnemyProjectiles(dt);
   updateProjectiles(dt);
   updateSpirals(dt);
+  updateDrops(dt);
   updateParticles(dt);
   updateDamageTexts(dt);
+  updatePickupTexts(dt);
   updateShockwaves(dt);
   updateUpgradeQueue();
 
@@ -1924,9 +2436,14 @@ bindJoystick();
 bindActionButton(document.getElementById("btn-palm"), tryPalmAttack);
 bindActionButton(document.getElementById("btn-qi"), tryQiAttack);
 
-document.getElementById("btn-fullscreen").addEventListener("pointerdown", (e) => {
+document.getElementById("btn-skills").addEventListener("pointerdown", (e) => {
   e.preventDefault();
-  toggleFullscreen();
+  toggleSkillMenu();
+});
+
+document.getElementById("skill-menu-close").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  toggleSkillMenu();
 });
 
 // 防止手機多指/雙擊造成瀏覽器原生縮放（CSS touch-action 之外的第二層防護）

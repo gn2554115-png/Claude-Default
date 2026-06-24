@@ -131,27 +131,7 @@ body {
   color: #ffd84d;
 }
 
-#fullscreen-hint {
-  position: absolute;
-  top: 52px;
-  right: 14px;
-  max-width: 160px;
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
-  font-size: 12px;
-  border-radius: 6px;
-  text-align: right;
-  pointer-events: none;
-  touch-action: none;
-  z-index: 70;
-}
-
-#fullscreen-hint.hidden {
-  display: none;
-}
-
-#btn-fullscreen {
+#btn-skills {
   position: absolute;
   top: 10px;
   right: 14px;
@@ -169,6 +149,125 @@ body {
   z-index: 70;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+#boss-hp-bar-bg {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  height: 10px;
+  background: #300;
+  border: 1px solid #ff5566;
+  z-index: 65;
+  pointer-events: none;
+  touch-action: none;
+}
+
+#boss-hp-bar-bg.hidden {
+  display: none;
+}
+
+#boss-hp-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: #ff3344;
+  transition: width 0.2s;
+}
+
+#skill-menu {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 60px;
+  background: rgba(5, 5, 10, 0.92);
+  color: #fff;
+  z-index: 90;
+  touch-action: auto;
+  overflow-y: auto;
+}
+
+#skill-menu.hidden {
+  display: none;
+}
+
+#skill-menu h2 {
+  font-size: 22px;
+  color: #ffd84d;
+}
+
+#skill-menu-currency {
+  font-size: 16px;
+  color: #ffd84d;
+  font-weight: bold;
+}
+
+#skill-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 280px;
+}
+
+.skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(20, 20, 30, 0.9);
+  border: 2px solid #3ad6ff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 0 10px rgba(58, 214, 255, 0.4);
+}
+
+.skill-name {
+  font-size: 16px;
+  font-weight: bold;
+  color: #fff;
+}
+
+.skill-level {
+  font-size: 13px;
+  color: #ffd84d;
+}
+
+.skill-desc {
+  font-size: 12px;
+  color: #ccc;
+}
+
+.skill-buy-btn {
+  margin-top: 4px;
+  align-self: flex-start;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #ffd84d;
+  background: rgba(255, 216, 77, 0.15);
+  color: #ffd84d;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.skill-buy-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#skill-menu-close {
+  margin-top: 10px;
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid #fff;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
 }
 
 #level-up-cards {
