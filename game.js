@@ -11,6 +11,8 @@ function loadImage(key, src) {
   const img = new Image();
   img.onload = () => {
     assetImages[key] = img;
+    const select = document.getElementById("character-select");
+    if (select && !select.classList.contains("hidden")) renderCharacterSelect();
   };
   img.onerror = () => {
     console.warn(`[assets] 圖片載入失敗，將使用 Canvas fallback：${key} (${src})`);
@@ -24,6 +26,10 @@ function loadAssets() {
   loadImage("ruins_night", "assets/backgrounds/ruins_night.png");
   loadImage("qingfeng_concept", "assets/characters/qingfeng_concept.png");
   loadImage("yexuan_concept", "assets/characters/yexuan_concept.png");
+  // Preview 圖目前沒有透明 alpha，先載入給選角畫面作為美術圖使用。
+  // 遊戲內 drawPlayerSprite() 會檢查 spriteReady，避免誤把非透明預覽圖當正式 sprite。
+  loadImage("qingfeng_preview", "assets/characters/qingfeng_preview.png");
+  loadImage("yexuan_preview", "assets/characters/yexuan_preview.png");
 }
 
 const PLAYER_SPEED = 200; // px/秒
@@ -252,6 +258,8 @@ const CHARACTERS = [
     palmName: "霸王斬",
     spriteKey: "qingfeng",
     conceptKey: "qingfeng_concept",
+    previewKey: "qingfeng_preview",
+    spriteReady: false,
     spriteHeight: 72,
   },
   {
@@ -265,6 +273,8 @@ const CHARACTERS = [
     palmName: "魅影分身",
     spriteKey: "yexuan",
     conceptKey: "yexuan_concept",
+    previewKey: "yexuan_preview",
+    spriteReady: false,
     spriteHeight: 72,
   },
 ];
@@ -2149,7 +2159,11 @@ function renderCharacterSelect() {
   CHARACTERS.forEach((c) => {
     const card = document.createElement("button");
     card.className = "character-card";
-    card.innerHTML = `<div class="character-swatch" style="background:${c.bodyColor};border:2px solid ${c.rimColor};box-shadow:0 0 10px ${c.rimColor};"></div><span class="character-name">${c.name}</span><span class="character-desc">${c.desc}</span>`;
+    const artKey = c.previewKey || c.conceptKey;
+    const art = artKey && assetImages[artKey]
+      ? `<img class="character-art" src="${assetImages[artKey].src}" alt="${c.name} 角色美術圖">`
+      : `<div class="character-swatch" style="background:${c.bodyColor};border:2px solid ${c.rimColor};box-shadow:0 0 10px ${c.rimColor};"></div>`;
+    card.innerHTML = `${art}<span class="character-name">${c.name}</span><span class="character-desc">${c.desc}</span>`;
     card.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       startGameWithCharacter(c.id);
@@ -2370,10 +2384,10 @@ function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   ctx.restore();
 }
 
-// 若角色已提供正式透明 sprite（assetImages[character.spriteKey]）才用 drawImage 畫角色，
-// 目前兩名角色都還沒有正式 sprite，因此一律走 drawPlayerShape() 的 Canvas 繪製。
+// 若角色已提供正式透明 sprite（assetImages[character.spriteKey] 且 spriteReady=true）才用 drawImage 畫角色，
+// preview/concept 圖目前沒有透明 alpha，只用於選角畫面，遊戲內保留 Canvas fallback。
 function drawPlayerSprite(x, y, facing, animTime, moving, hurt, alpha, character) {
-  const sprite = character && character.spriteKey && assetImages[character.spriteKey];
+  const sprite = character && character.spriteReady && character.spriteKey && assetImages[character.spriteKey];
   if (!sprite) {
     drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha);
     return;
