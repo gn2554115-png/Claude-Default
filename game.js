@@ -32,10 +32,13 @@ const state = {
   enemies: [],
   projectiles: [],
   particles: [],
+  damageTexts: [],
   score: 0,
   gameOver: false,
   keys: new Set(),
   lastEnemySpawnTime: 0,
+  joystick: { active: false, pointerId: null, knobX: 0, knobY: 0, dx: 0, dy: 0 },
+  shake: { time: 0, duration: 0.1, magnitude: 0 },
 };
 
 function resetState() {
@@ -54,13 +57,24 @@ function resetState() {
     qiCooldownUntil: 0,
     animTime: 0,
     trailTimer: 0,
+    history: [],
+    historyTimer: 0,
+    moving: false,
   };
   state.enemies = [];
   state.projectiles = [];
   state.particles = [];
+  state.damageTexts = [];
   state.score = 0;
   state.gameOver = false;
   state.lastEnemySpawnTime = performance.now();
+  state.joystick.active = false;
+  state.joystick.pointerId = null;
+  state.joystick.knobX = 0;
+  state.joystick.knobY = 0;
+  state.joystick.dx = 0;
+  state.joystick.dy = 0;
+  state.shake.time = 0;
 
   document.getElementById("game-over-screen").classList.add("hidden");
   updateUI();
@@ -197,6 +211,48 @@ function emitPlayerTrail(p, dt) {
   });
 }
 
+// ===== 傷害飄字 =====
+function spawnDamageText(x, y, value) {
+  state.damageTexts.push({
+    x,
+    y: y - 14,
+    value,
+    life: 0.6,
+    maxLife: 0.6,
+    vy: -42,
+  });
+}
+
+function updateDamageTexts(dt) {
+  for (const dtxt of state.damageTexts) {
+    dtxt.y += dtxt.vy * dt;
+    dtxt.life -= dt;
+  }
+  state.damageTexts = state.damageTexts.filter((dtxt) => dtxt.life > 0);
+}
+
+function drawDamageTexts() {
+  ctx.save();
+  ctx.font = "bold 18px sans-serif";
+  ctx.textAlign = "center";
+  for (const dtxt of state.damageTexts) {
+    const alpha = Math.max(0, dtxt.life / dtxt.maxLife);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "#ffd84d";
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 4;
+    ctx.fillText(`-${dtxt.value}`, dtxt.x, dtxt.y);
+  }
+  ctx.restore();
+}
+
+// ===== 畫面震動 =====
+function triggerShake(duration, magnitude) {
+  state.shake.time = duration;
+  state.shake.duration = duration;
+  state.shake.magnitude = magnitude;
+}
+
 function spawnPalmSlash(hitbox, facing) {
   const baseAngle = facing > 0 ? 0 : Math.PI;
   for (let i = 0; i < 7; i++) {
@@ -280,15 +336,34 @@ function playNoiseBurst({ duration, peak = 0.3 }) {
 }
 
 function playPalmSound() {
-  playNoiseBurst({ duration: 0.08, peak: 0.3 });
+  // 厚實重低音撞擊：低頻下滑音（衝擊核心）疊加短促噪音（拍擊瞬間）
+  playTone({ freq: 150, freqEnd: 45, duration: 0.14, type: "sine", peak: 0.45 });
+  playNoiseBurst({ duration: 0.05, peak: 0.3 });
 }
 
 function playQiFireSound() {
-  playTone({ freq: 600, freqEnd: 1200, duration: 0.18, type: "sawtooth", peak: 0.15 });
+  // 聚氣（頻率緩升）接續發射衝高的單一滑音特效
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const t0 = ctx.currentTime;
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(280, t0);
+  osc.frequency.linearRampToValueAtTime(680, t0 + 0.12);
+  osc.frequency.linearRampToValueAtTime(1400, t0 + 0.22);
+  gain.gain.setValueAtTime(0.001, t0);
+  gain.gain.linearRampToValueAtTime(0.22, t0 + 0.12);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.28);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.29);
 }
 
 function playHitSound() {
-  playTone({ freq: 320, duration: 0.1, type: "square", peak: 0.15 });
+  playTone({ freq: 220, freqEnd: 130, duration: 0.08, type: "triangle", peak: 0.25 });
+  playNoiseBurst({ duration: 0.04, peak: 0.18 });
 }
 
 function playKillSound() {
@@ -296,7 +371,8 @@ function playKillSound() {
 }
 
 function playHurtSound() {
-  playNoiseBurst({ duration: 0.15, peak: 0.35 });
+  playNoiseBurst({ duration: 0.12, peak: 0.3 });
+  playTone({ freq: 130, freqEnd: 55, duration: 0.12, type: "sine", peak: 0.28 });
 }
 
 function playGameOverSound() {
@@ -330,30 +406,53 @@ function updatePlayer(dt) {
   let dx = 0;
   let dy = 0;
 
-  if (state.keys.has("w")) dy -= 1;
-  if (state.keys.has("s")) dy += 1;
-  if (state.keys.has("a")) dx -= 1;
-  if (state.keys.has("d")) dx += 1;
-
-  const moving = dx !== 0 || dy !== 0;
-
-  if (moving) {
-    const len = Math.sqrt(dx * dx + dy * dy);
-    dx /= len;
-    dy /= len;
-    p.x += dx * p.speed * dt;
-    p.y += dy * p.speed * dt;
+  if (state.joystick.active) {
+    // 搖桿類比輸入：方向與速度（拉桿距離）皆由搖桿向量決定
+    dx = state.joystick.dx;
+    dy = state.joystick.dy;
+  } else {
+    if (state.keys.has("w")) dy -= 1;
+    if (state.keys.has("s")) dy += 1;
+    if (state.keys.has("a")) dx -= 1;
+    if (state.keys.has("d")) dx += 1;
   }
 
-  if (dx > 0) p.facing = 1;
-  else if (dx < 0) p.facing = -1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const moving = len > 0.001;
+
+  if (moving) {
+    let nx = dx;
+    let ny = dy;
+    let mag = len;
+    if (!state.joystick.active) {
+      // 數位按鍵輸入：方向正規化，全速移動
+      nx = dx / len;
+      ny = dy / len;
+      mag = 1;
+    }
+    p.x += nx * p.speed * mag * dt;
+    p.y += ny * p.speed * mag * dt;
+    if (nx > 0.05) p.facing = 1;
+    else if (nx < -0.05) p.facing = -1;
+  }
 
   p.x = clamp(p.x, p.radius, CANVAS_W - p.radius);
   p.y = clamp(p.y, p.radius, CANVAS_H - p.radius);
 
   p.animTime += dt;
   p.moving = moving;
-  if (moving) emitPlayerTrail(p, dt);
+
+  if (moving) {
+    emitPlayerTrail(p, dt);
+    p.historyTimer -= dt * 1000;
+    if (p.historyTimer <= 0) {
+      p.historyTimer = 40;
+      p.history.push({ x: p.x, y: p.y, facing: p.facing, animTime: p.animTime });
+      if (p.history.length > 4) p.history.shift();
+    }
+  } else {
+    p.history.length = 0;
+  }
 }
 
 function tryPalmAttack() {
@@ -374,6 +473,8 @@ function tryPalmAttack() {
   for (const enemy of state.enemies) {
     if (circleHit(hitbox, enemy)) {
       applyDamage(enemy, PALM_DAMAGE);
+      spawnDamageText(enemy.x, enemy.y - enemy.radius, PALM_DAMAGE);
+      triggerShake(0.1, 6);
       playHitSound();
     }
   }
@@ -435,7 +536,7 @@ function updateEnemies(dt) {
   state.enemies = state.enemies.filter((e) => {
     if (e.hp <= 0) {
       state.score += KILL_SCORE;
-      spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)");
+      spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)", 20);
       playKillSound();
       return false;
     }
@@ -465,7 +566,9 @@ function updateProjectiles(dt) {
     for (const enemy of state.enemies) {
       if (!proj.hit && circleHit(proj, enemy)) {
         applyDamage(enemy, proj.damage);
+        spawnDamageText(enemy.x, enemy.y - enemy.radius, proj.damage);
         spawnExplosion(proj.x, proj.y, "rgba(255,216,77,0.9)", 10);
+        triggerShake(0.1, 6);
         playHitSound();
         proj.hit = true;
       }
@@ -511,63 +614,83 @@ function updateUI() {
 // ===== 渲染 =====
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+const joystickCanvas = document.getElementById("joystick-canvas");
+const joystickCtx = joystickCanvas.getContext("2d");
 
-function drawPlayer() {
+function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   const p = state.player;
-  const hurt = isHurt(p);
-  const wobbleFreq = p.moving ? 10 : 3;
-  const wobbleAmp = p.moving ? 2 : 1;
-  const bob = Math.sin(p.animTime * wobbleFreq) * wobbleAmp;
-  const swayL = Math.sin(p.animTime * wobbleFreq) * 3;
-  const swayR = Math.sin(p.animTime * wobbleFreq + Math.PI) * 3;
+  const wobbleFreq = moving ? 10 : 3;
+  const wobbleAmp = moving ? 2 : 1;
+  const bob = Math.sin(animTime * wobbleFreq) * wobbleAmp;
+  const swayL = Math.sin(animTime * wobbleFreq) * 3;
+  const swayR = Math.sin(animTime * wobbleFreq + Math.PI) * 3;
+  const rimColor = hurt ? "#ff4444" : "#3ad6ff";
 
   ctx.save();
-  ctx.translate(p.x, p.y + bob);
+  ctx.globalAlpha = alpha;
+  ctx.translate(x, y + bob);
+  if (facing < 0) ctx.scale(-1, 1);
 
-  // 身體（長袍）— 霓虹漸層，下緣依走動擺動
-  const robeTop = hurt ? "#ff5555" : "#3ad6ff";
-  const robeBottom = hurt ? "#660000" : "#0a1a33";
-  const robeGrad = ctx.createLinearGradient(0, -p.h / 2 + 12, 0, p.h / 2);
-  robeGrad.addColorStop(0, robeTop);
-  robeGrad.addColorStop(1, robeBottom);
-  ctx.fillStyle = robeGrad;
-  ctx.shadowColor = hurt ? "#ff3333" : "#3ad6ff";
-  ctx.shadowBlur = 16;
+  // 古風剪影身形（長袍 + 背劍），背光發光剪影感
+  ctx.fillStyle = "#0c0c14";
+  ctx.shadowColor = rimColor;
+  ctx.shadowBlur = 14;
+
   ctx.beginPath();
-  ctx.moveTo(-p.w / 2, -p.h / 2 + 12);
-  ctx.lineTo(p.w / 2, -p.h / 2 + 12);
+  ctx.moveTo(-p.w / 2, -p.h / 2 + 14);
+  ctx.lineTo(p.w / 2, -p.h / 2 + 14);
   ctx.lineTo(p.w / 2 + swayR, p.h / 2);
   ctx.lineTo(-p.w / 2 + swayL, p.h / 2);
   ctx.closePath();
   ctx.fill();
 
-  // 腰帶（金色點綴，打破單色長袍的單調感）
+  ctx.beginPath();
+  ctx.arc(0, -p.h / 2 + 6, 11, 0, Math.PI * 2);
+  ctx.fill();
+
   ctx.shadowBlur = 0;
+  ctx.fillRect(p.w / 2 - 2, -p.h / 2 + 16, 4, p.h - 14);
+
+  // 剪影邊緣描邊發光（背光輪廓感）
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = rimColor;
+  ctx.globalAlpha = alpha * 0.85;
+  ctx.beginPath();
+  ctx.moveTo(-p.w / 2, -p.h / 2 + 14);
+  ctx.lineTo(p.w / 2, -p.h / 2 + 14);
+  ctx.lineTo(p.w / 2 + swayR, p.h / 2);
+  ctx.lineTo(-p.w / 2 + swayL, p.h / 2);
+  ctx.closePath();
+  ctx.stroke();
+
+  // 腰帶（金色點綴）
+  ctx.globalAlpha = alpha;
   ctx.fillStyle = "#ffd84d";
-  ctx.fillRect(-p.w / 2, -p.h / 2 + 22, p.w, 4);
+  ctx.fillRect(-p.w / 2, -p.h / 2 + 24, p.w, 3);
 
-  // 頭部 — 發光核心球體
-  const coreGrad = ctx.createRadialGradient(0, -p.h / 2 + 9, 1, 0, -p.h / 2 + 9, 12);
-  if (hurt) {
-    coreGrad.addColorStop(0, "#ffffff");
-    coreGrad.addColorStop(0.5, "#ff5555");
-    coreGrad.addColorStop(1, "#880000");
-  } else {
-    coreGrad.addColorStop(0, "#ffffff");
-    coreGrad.addColorStop(0.5, "#3ad6ff");
-    coreGrad.addColorStop(1, "#0a3a55");
-  }
-  ctx.fillStyle = coreGrad;
-  ctx.shadowColor = hurt ? "#ff3333" : "#3ad6ff";
-  ctx.shadowBlur = 20;
-  ctx.fillRect(-10, -p.h / 2, 20, 18);
-
-  // 面向指示（眼睛朝向方向的小色塊）
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "#000";
-  ctx.fillRect(p.facing * 4 - 2, -p.h / 2 + 6, 4, 4);
+  // 眼神發光點
+  ctx.fillStyle = rimColor;
+  ctx.shadowColor = rimColor;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.arc(4, -p.h / 2 + 5, 2, 0, Math.PI * 2);
+  ctx.fill();
 
   ctx.restore();
+}
+
+function drawPlayer() {
+  const p = state.player;
+  const hurt = isHurt(p);
+
+  // 殘影特效：移動中由舊到新、由淡到濃的剪影分身
+  for (let i = 0; i < p.history.length; i++) {
+    const h = p.history[i];
+    const alpha = ((i + 1) / (p.history.length + 1)) * 0.35;
+    drawPlayerShape(h.x, h.y, h.facing, h.animTime, true, false, alpha);
+  }
+
+  drawPlayerShape(p.x, p.y, p.facing, p.animTime, p.moving, hurt, 1);
 }
 
 function drawEnemy(e) {
@@ -685,11 +808,24 @@ function drawBackground() {
 function render() {
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
+  ctx.save();
+  if (state.shake.time > 0) {
+    const power = state.shake.time / state.shake.duration;
+    const offsetX = (Math.random() - 0.5) * state.shake.magnitude * power;
+    const offsetY = (Math.random() - 0.5) * state.shake.magnitude * power;
+    ctx.translate(offsetX, offsetY);
+  }
+
   drawBackground();
   for (const e of state.enemies) drawEnemy(e);
   drawParticles();
   for (const proj of state.projectiles) drawProjectile(proj);
   drawPlayer();
+  drawDamageTexts();
+
+  ctx.restore();
+
+  drawJoystick();
 }
 
 // ===== RWD 縮放 =====
@@ -702,28 +838,103 @@ function updateGameScale() {
   document.getElementById("game-container").style.transform = `scale(${scale})`;
 }
 
-// ===== 觸控控制 =====
-function bindDpadButton(btn) {
-  const key = btn.dataset.key;
-  const press = (e) => {
+// ===== 觸控控制：圓形虛擬搖桿 =====
+const JOYSTICK_MAX_DIST = 45;
+
+function drawJoystick() {
+  const w = joystickCanvas.width;
+  const h = joystickCanvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const j = state.joystick;
+
+  joystickCtx.clearRect(0, 0, w, h);
+
+  // 外圈（半透明發光圓環）
+  joystickCtx.save();
+  joystickCtx.shadowColor = "rgba(58,214,255,0.8)";
+  joystickCtx.shadowBlur = 14;
+  joystickCtx.fillStyle = "rgba(10,20,30,0.35)";
+  joystickCtx.beginPath();
+  joystickCtx.arc(cx, cy, 60, 0, Math.PI * 2);
+  joystickCtx.fill();
+  joystickCtx.lineWidth = 2;
+  joystickCtx.strokeStyle = "rgba(58,214,255,0.7)";
+  joystickCtx.stroke();
+  joystickCtx.restore();
+
+  // 內部操控小圓點
+  const knobX = cx + j.knobX;
+  const knobY = cy + j.knobY;
+  joystickCtx.save();
+  joystickCtx.shadowColor = "rgba(58,214,255,0.95)";
+  joystickCtx.shadowBlur = j.active ? 18 : 8;
+  const knobGrad = joystickCtx.createRadialGradient(knobX, knobY, 2, knobX, knobY, 24);
+  knobGrad.addColorStop(0, "#ffffff");
+  knobGrad.addColorStop(0.5, "#3ad6ff");
+  knobGrad.addColorStop(1, "#0a3a55");
+  joystickCtx.fillStyle = knobGrad;
+  joystickCtx.beginPath();
+  joystickCtx.arc(knobX, knobY, 24, 0, Math.PI * 2);
+  joystickCtx.fill();
+  joystickCtx.restore();
+}
+
+function bindJoystick() {
+  const cx = joystickCanvas.width / 2;
+  const cy = joystickCanvas.height / 2;
+
+  function updateFromEvent(e) {
+    const rect = joystickCanvas.getBoundingClientRect();
+    const scaleX = joystickCanvas.width / rect.width;
+    const scaleY = joystickCanvas.height / rect.height;
+    const localX = (e.clientX - rect.left) * scaleX;
+    const localY = (e.clientY - rect.top) * scaleY;
+    const dx = localX - cx;
+    const dy = localY - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const clamped = Math.min(dist, JOYSTICK_MAX_DIST);
+    const angle = Math.atan2(dy, dx);
+    state.joystick.knobX = Math.cos(angle) * clamped;
+    state.joystick.knobY = Math.sin(angle) * clamped;
+    const mag = clamped / JOYSTICK_MAX_DIST;
+    state.joystick.dx = Math.cos(angle) * mag;
+    state.joystick.dy = Math.sin(angle) * mag;
+  }
+
+  function onDown(e) {
     e.preventDefault();
-    state.keys.add(key);
-    btn.classList.add("pressed");
+    state.joystick.active = true;
+    state.joystick.pointerId = e.pointerId;
     try {
-      btn.setPointerCapture(e.pointerId);
+      joystickCanvas.setPointerCapture(e.pointerId);
     } catch (err) {
       // ignore unsupported environments
     }
-  };
-  const release = (e) => {
+    updateFromEvent(e);
+  }
+
+  function onMove(e) {
+    if (!state.joystick.active || e.pointerId !== state.joystick.pointerId) return;
     e.preventDefault();
-    state.keys.delete(key);
-    btn.classList.remove("pressed");
-  };
-  btn.addEventListener("pointerdown", press);
-  btn.addEventListener("pointerup", release);
-  btn.addEventListener("pointercancel", release);
-  btn.addEventListener("pointerleave", release);
+    updateFromEvent(e);
+  }
+
+  function onUp(e) {
+    if (e.pointerId !== state.joystick.pointerId) return;
+    e.preventDefault();
+    state.joystick.active = false;
+    state.joystick.pointerId = null;
+    state.joystick.knobX = 0;
+    state.joystick.knobY = 0;
+    state.joystick.dx = 0;
+    state.joystick.dy = 0;
+  }
+
+  joystickCanvas.addEventListener("pointerdown", onDown);
+  joystickCanvas.addEventListener("pointermove", onMove);
+  joystickCanvas.addEventListener("pointerup", onUp);
+  joystickCanvas.addEventListener("pointercancel", onUp);
 }
 
 function bindActionButton(btn, triggerFn) {
@@ -757,6 +968,11 @@ function update(dt, timestamp) {
   updateEnemies(dt);
   updateProjectiles(dt);
   updateParticles(dt);
+  updateDamageTexts(dt);
+
+  if (state.shake.time > 0) {
+    state.shake.time = Math.max(0, state.shake.time - dt);
+  }
 
   if (!state.gameOver && state.player.hp <= 0) {
     triggerGameOver();
@@ -791,7 +1007,7 @@ window.addEventListener("orientationchange", () => {
   setTimeout(updateGameScale, 100);
 });
 
-document.querySelectorAll(".dpad-btn").forEach(bindDpadButton);
+bindJoystick();
 bindActionButton(document.getElementById("btn-palm"), tryPalmAttack);
 bindActionButton(document.getElementById("btn-qi"), tryQiAttack);
 
