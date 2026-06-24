@@ -38,25 +38,29 @@ const SPIRAL_SPIN = 9; // rad/秒
 
 const HURT_EFFECT_DURATION = 150; // ms
 
-const ENEMY_SPAWN_INTERVAL_BASE = 1400; // ms
-const ENEMY_SPAWN_INTERVAL_MIN = 350;
-const ENEMY_SPAWN_RAMP_SEC = 60; // 60 秒內生成間隔線性縮短到最小值
 const ENEMY_RADIUS = 16;
 const ENEMY_MAX_HP = 30;
-const ENEMY_HP_RAMP_SEC = 90; // 90 秒內敵人血量緩升到 1.5x
 const ENEMY_SPEED = 70;
 const ENEMY_TOUCH_DAMAGE = 8;
 const ENEMY_KNOCKBACK_RESIST = 0.85;
 const KILL_SCORE = 10;
 
-// 敵人變種：較大較慢、血厚的「悍敵」，需存活一段時間後才會出現
-const ENEMY_BRUTE_MIN_ELAPSED = 18; // 秒
-const ENEMY_BRUTE_CHANCE = 0.22;
+// 敵人變種：較大較慢、血厚的「悍敵」
 const ENEMY_BRUTE_HP_MULT = 2.4;
 const ENEMY_BRUTE_RADIUS = 24;
 const ENEMY_BRUTE_SPEED_MULT = 0.55;
 const ENEMY_BRUTE_TOUCH_MULT = 1.6;
 const ENEMY_BRUTE_SCORE_MULT = 2;
+
+// 關卡制難度：每 STAGE_DURATION_SEC 秒跳一級，離散調整而非連續內插
+const STAGE_DURATION_SEC = 45;
+const STAGE_CONFIGS = [
+  { spawnInterval: 1400, hpMult: 1.0, bruteChance: 0.0, skyTint: "#3a2a4a" },
+  { spawnInterval: 1100, hpMult: 1.15, bruteChance: 0.15, skyTint: "#4a2a3a" },
+  { spawnInterval: 850, hpMult: 1.35, bruteChance: 0.22, skyTint: "#2a2a4a" },
+  { spawnInterval: 650, hpMult: 1.55, bruteChance: 0.3, skyTint: "#1a1a3a" },
+  { spawnInterval: 450, hpMult: 1.8, bruteChance: 0.35, skyTint: "#0a0a2a" },
+];
 
 const XP_BASE_TO_NEXT = 20;
 const XP_GROWTH = 1.35;
@@ -67,13 +71,14 @@ const MAX_PARTICLES = 400;
 // ===== 角色設定 =====
 const CHARACTERS = [
   {
-    id: "suhuanzhen",
-    name: "素還真",
+    id: "qingfeng",
+    name: "青鋒",
     rimColor: "#3ad6ff",
     bodyColor: "#11131c",
     beltColor: "#ffd84d",
     desc: "掌震波 AoE　震退四周敵人",
     palmAbility: "nova",
+    palmName: "霸王肘",
   },
   {
     id: "yexuan",
@@ -83,6 +88,7 @@ const CHARACTERS = [
     beltColor: "#ff5fd1",
     desc: "分身術　漩渦擴散攻擊",
     palmAbility: "spiral",
+    palmName: "魅影分身",
   },
 ];
 
@@ -148,11 +154,11 @@ const UPGRADE_POOL = [
     },
   },
   {
-    id: "projSpeed",
-    name: "勁氣加速",
-    stat: "彈速 +20%",
+    id: "pierce",
+    name: "貫穿勁",
+    stat: "子彈可貫穿 +1 名敵人",
     apply(p) {
-      p.projSpeed = Math.round(p.projSpeed * 1.2);
+      p.pierceCount = (p.pierceCount || 0) + 1;
     },
   },
 ];
@@ -171,6 +177,7 @@ const state = {
   score: 0,
   kills: 0,
   elapsed: 0,
+  stage: 0,
   gameOver: false,
   keys: new Set(),
   lastEnemySpawnTime: 0,
@@ -213,6 +220,7 @@ function resetState(characterId) {
     projCount: AUTO_ATK_BASE_COUNT,
     projSpeed: AUTO_ATK_SPEED,
     moveSpeedMult: 1,
+    pierceCount: 0,
 
     palmCharges: PALM_MAX_CHARGES,
     palmMaxCharges: PALM_MAX_CHARGES,
@@ -228,6 +236,7 @@ function resetState(characterId) {
   state.score = 0;
   state.kills = 0;
   state.elapsed = 0;
+  state.stage = 0;
   state.gameOver = false;
   state.lastEnemySpawnTime = performance.now();
   state.joystick.active = false;
@@ -253,6 +262,18 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// percent > 0 加亮，percent < 0 加暗，hex 須為 #rrggbb 格式
+function shadeColor(hex, percent) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const adjust = (c) => {
+    const target = percent > 0 ? 255 : 0;
+    return Math.round(c + (target - c) * (Math.abs(percent) / 100));
+  };
+  return `rgb(${adjust(r)}, ${adjust(g)}, ${adjust(b)})`;
+}
+
 function distance(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
@@ -272,10 +293,11 @@ function isHurt(entity) {
   return performance.now() < entity.hurtUntil;
 }
 
-function findNearestEnemy(x, y) {
+function findNearestEnemy(x, y, exclude) {
   let best = null;
   let bestDist = Infinity;
   for (const e of state.enemies) {
+    if (exclude && exclude.has(e)) continue;
     const d = distance({ x, y }, e);
     if (d < bestDist) {
       bestDist = d;
@@ -858,6 +880,28 @@ function fireHomingVolley(p, target, count, damage, speed, turnRate, radius, kin
       turnRate,
       target,
       kind,
+      pierceRemaining: p.pierceCount || 0,
+      hitSet: new Set(),
+    });
+  }
+}
+
+function spawnAutoFireBurst(p, angle) {
+  for (let i = 0; i < 4; i++) {
+    const spread = (Math.random() - 0.5) * 0.5;
+    const a = angle + spread;
+    const speed = 60 + Math.random() * 60;
+    spawnParticle({
+      x: p.x,
+      y: p.y,
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+      life: 0.12,
+      maxLife: 0.12,
+      size: 1.5 + Math.random() * 1.5,
+      color: "rgba(58,214,255,0.9)",
+      type: "muzzle",
+      glow: true,
     });
   }
 }
@@ -874,6 +918,7 @@ function updateAutoAttack(dt) {
   }
 
   p.autoAtkTimer = p.atkInterval;
+  spawnAutoFireBurst(p, Math.atan2(target.y - p.y, target.x - p.x));
   fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS, "auto");
 }
 
@@ -897,6 +942,8 @@ function tryQiAttack() {
       damage: QI_DAMAGE,
       homing: false,
       kind: "qi",
+      pierceRemaining: p.pierceCount || 0,
+      hitSet: new Set(),
     });
   }
 }
@@ -1033,10 +1080,10 @@ function spawnEnemy() {
     y = Math.random() * CANVAS_H;
   }
 
-  const hpRamp = Math.min(state.elapsed / ENEMY_HP_RAMP_SEC, 1);
-  const baseHp = Math.round(ENEMY_MAX_HP * (1 + hpRamp * 0.5));
+  const stageConfig = STAGE_CONFIGS[state.stage];
+  const baseHp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult);
 
-  const isBrute = state.elapsed >= ENEMY_BRUTE_MIN_ELAPSED && Math.random() < ENEMY_BRUTE_CHANCE;
+  const isBrute = Math.random() < stageConfig.bruteChance;
   const type = isBrute ? "brute" : "normal";
   const radius = isBrute ? ENEMY_BRUTE_RADIUS : ENEMY_RADIUS;
   const hp = isBrute ? Math.round(baseHp * ENEMY_BRUTE_HP_MULT) : baseHp;
@@ -1065,8 +1112,19 @@ function spawnEnemy() {
 }
 
 function getEnemySpawnInterval() {
-  const t = Math.min(state.elapsed / ENEMY_SPAWN_RAMP_SEC, 1);
-  return ENEMY_SPAWN_INTERVAL_BASE - t * (ENEMY_SPAWN_INTERVAL_BASE - ENEMY_SPAWN_INTERVAL_MIN);
+  return STAGE_CONFIGS[state.stage].spawnInterval;
+}
+
+function updateStage() {
+  const nextStage = Math.min(
+    Math.floor(state.elapsed / STAGE_DURATION_SEC),
+    STAGE_CONFIGS.length - 1
+  );
+  if (nextStage !== state.stage) {
+    state.stage = nextStage;
+    console.log(`[stage] entering stage ${nextStage + 1}`);
+    triggerShake(0.15, 6);
+  }
 }
 
 function updateEnemySpawning(timestamp) {
@@ -1135,8 +1193,13 @@ function updateEnemies(dt) {
 function updateProjectiles(dt) {
   for (const proj of state.projectiles) {
     if (proj.homing) {
-      if (!proj.target || proj.target.hp <= 0 || !state.enemies.includes(proj.target)) {
-        proj.target = findNearestEnemy(proj.x, proj.y);
+      if (
+        !proj.target ||
+        proj.target.hp <= 0 ||
+        !state.enemies.includes(proj.target) ||
+        proj.hitSet.has(proj.target)
+      ) {
+        proj.target = findNearestEnemy(proj.x, proj.y, proj.hitSet);
       }
       if (proj.target) {
         const desiredAngle = Math.atan2(proj.target.y - proj.y, proj.target.x - proj.x);
@@ -1158,14 +1221,20 @@ function updateProjectiles(dt) {
   }
 
   for (const proj of state.projectiles) {
+    if (proj.hit) continue;
     for (const enemy of state.enemies) {
-      if (!proj.hit && circleHit(proj, enemy)) {
-        applyDamage(enemy, proj.damage);
-        spawnDamageText(enemy.x, enemy.y - enemy.radius, proj.damage);
-        spawnExplosion(proj.x, proj.y, "rgba(255,216,77,0.9)", 10);
-        triggerShake(0.1, 6);
-        playHitSound();
+      if (proj.hitSet.has(enemy) || !circleHit(proj, enemy)) continue;
+      applyDamage(enemy, proj.damage);
+      spawnDamageText(enemy.x, enemy.y - enemy.radius, proj.damage);
+      spawnExplosion(proj.x, proj.y, "rgba(255,216,77,0.9)", 10);
+      triggerShake(0.1, 6);
+      playHitSound();
+      proj.hitSet.add(enemy);
+      if (proj.pierceRemaining > 0) {
+        proj.pierceRemaining -= 1;
+      } else {
         proj.hit = true;
+        break;
       }
     }
   }
@@ -1191,6 +1260,7 @@ function triggerGameOver() {
 
 function resetAndStart() {
   resetState();
+  updateActionButtonLabels();
   requestAnimationFrame(gameLoop);
 }
 
@@ -1210,34 +1280,88 @@ function renderCharacterSelect() {
   });
 }
 
+function updateActionButtonLabels() {
+  const label = document.querySelector("#btn-palm .palm-label");
+  if (label) label.textContent = state.player.character.palmName || "掌";
+}
+
 function startGameWithCharacter(id) {
   document.getElementById("character-select").classList.add("hidden");
   resetState(id);
+  updateActionButtonLabels();
   state.started = true;
   unlockAudio();
   attemptAutoFullscreen();
 }
 
 // ===== 全螢幕 =====
+function isFullscreenSupported() {
+  const el = document.documentElement;
+  return Boolean(el.requestFullscreen || el.webkitRequestFullscreen);
+}
+
+let fullscreenHintTimer = null;
+function showFullscreenFallbackMessage(text) {
+  const hint = document.getElementById("fullscreen-hint");
+  if (!hint) return;
+  hint.textContent = text;
+  hint.classList.remove("hidden");
+  if (fullscreenHintTimer) clearTimeout(fullscreenHintTimer);
+  fullscreenHintTimer = setTimeout(() => {
+    hint.classList.add("hidden");
+  }, 2200);
+}
+
 function toggleFullscreen() {
   const isFs = document.fullscreenElement || document.webkitFullscreenElement;
   if (isFs) {
     const exit = document.exitFullscreen || document.webkitExitFullscreen;
-    if (exit) exit.call(document);
-  } else {
-    attemptAutoFullscreen();
+    if (exit) {
+      Promise.resolve(exit.call(document))
+        .then(() => console.log("[fullscreen] exited"))
+        .catch((err) => console.warn("[fullscreen] exit failed", err));
+    }
+    return;
+  }
+
+  if (!isFullscreenSupported()) {
+    console.warn("[fullscreen] not supported in this browser");
+    showFullscreenFallbackMessage("此瀏覽器不支援全螢幕");
+    return;
+  }
+
+  const el = document.documentElement;
+  const request = el.requestFullscreen || el.webkitRequestFullscreen;
+  try {
+    Promise.resolve(request.call(el))
+      .then(() => console.log("[fullscreen] entered"))
+      .catch((err) => {
+        console.warn("[fullscreen] request rejected", err);
+        showFullscreenFallbackMessage("全螢幕請求被拒絕");
+      });
+  } catch (err) {
+    console.warn("[fullscreen] request threw", err);
+    showFullscreenFallbackMessage("無法進入全螢幕");
   }
 }
 
 function attemptAutoFullscreen() {
   const el = document.documentElement;
   const request = el.requestFullscreen || el.webkitRequestFullscreen;
-  if (!request) return;
+  if (!request) {
+    console.log("[fullscreen] auto attempt skipped: unsupported");
+    return;
+  }
   try {
     const result = request.call(el);
-    if (result && result.catch) result.catch(() => {});
+    if (result && result.catch) {
+      result
+        .then(() => console.log("[fullscreen] auto entered"))
+        .catch((err) => console.log("[fullscreen] auto attempt failed", err));
+    }
   } catch (err) {
     // 部分瀏覽器（如 iOS Safari）不支援全螢幕 API，靜默忽略
+    console.log("[fullscreen] auto attempt threw", err);
   }
 }
 
@@ -1260,6 +1384,7 @@ function updateUI() {
   const mins = Math.floor(state.elapsed / 60);
   const secs = Math.floor(state.elapsed % 60);
   document.getElementById("timer-text").textContent = `${mins}:${String(secs).padStart(2, "0")}`;
+  document.getElementById("stage-text").textContent = `關卡 ${state.stage + 1}`;
 
   document.getElementById("palm-charges").textContent =
     "●".repeat(p.palmCharges) + "○".repeat(Math.max(0, p.palmMaxCharges - p.palmCharges));
@@ -1296,43 +1421,111 @@ function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   const bob = Math.sin(animTime * wobbleFreq) * wobbleAmp;
   const swayL = Math.sin(animTime * wobbleFreq) * 3;
   const swayR = Math.sin(animTime * wobbleFreq + Math.PI) * 3;
+  const capeSwayL = Math.sin(animTime * wobbleFreq) * 6;
+  const capeSwayR = Math.sin(animTime * wobbleFreq + Math.PI) * 6;
   const rimColor = hurt ? "#ff4444" : character.rimColor;
+  const top = -p.h / 2 + 14;
+  const bottom = p.h / 2;
 
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.translate(x, y + bob);
   if (facing < 0) ctx.scale(-1, 1);
 
-  // 古風剪影身形（長袍 + 背劍），背光發光剪影感
-  ctx.fillStyle = character.bodyColor;
+  // 披風層（背後較寬、晃動幅度更大，營造層次與立體感）
+  const capeGrad = ctx.createLinearGradient(0, top, 0, bottom + 6);
+  capeGrad.addColorStop(0, shadeColor(character.bodyColor, -25));
+  capeGrad.addColorStop(1, shadeColor(character.bodyColor, -55));
+  ctx.fillStyle = capeGrad;
+  ctx.globalAlpha = alpha * 0.9;
+  ctx.beginPath();
+  ctx.moveTo(-p.w / 2 - 3, top + 2);
+  ctx.lineTo(p.w / 2 + 3, top + 2);
+  ctx.lineTo(p.w / 2 + 7 + capeSwayR, bottom + 6);
+  ctx.lineTo(-p.w / 2 - 7 + capeSwayL, bottom + 6);
+  ctx.closePath();
+  ctx.fill();
+
+  // 古風剪影身形（長袍主體），漸層補光＋背光發光剪影感
+  const bodyGrad = ctx.createLinearGradient(-p.w / 2, top, p.w / 2, bottom);
+  bodyGrad.addColorStop(0, shadeColor(character.bodyColor, 12));
+  bodyGrad.addColorStop(1, character.bodyColor);
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = bodyGrad;
   ctx.shadowColor = rimColor;
   ctx.shadowBlur = 14;
 
   ctx.beginPath();
-  ctx.moveTo(-p.w / 2, -p.h / 2 + 14);
-  ctx.lineTo(p.w / 2, -p.h / 2 + 14);
-  ctx.lineTo(p.w / 2 + swayR, p.h / 2);
-  ctx.lineTo(-p.w / 2 + swayL, p.h / 2);
+  ctx.moveTo(-p.w / 2, top);
+  ctx.lineTo(p.w / 2, top);
+  ctx.lineTo(p.w / 2 + swayR, bottom);
+  ctx.lineTo(-p.w / 2 + swayL, bottom);
   ctx.closePath();
   ctx.fill();
 
+  // 肩甲飾角
+  ctx.fillStyle = shadeColor(character.bodyColor, 20);
+  ctx.beginPath();
+  ctx.moveTo(-p.w / 2, top);
+  ctx.lineTo(-p.w / 2 - 5, top + 6);
+  ctx.lineTo(-p.w / 2 + 4, top + 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(p.w / 2, top);
+  ctx.lineTo(p.w / 2 + 5, top + 6);
+  ctx.lineTo(p.w / 2 - 4, top + 6);
+  ctx.closePath();
+  ctx.fill();
+
+  // 頭部
+  ctx.fillStyle = bodyGrad;
   ctx.beginPath();
   ctx.arc(0, -p.h / 2 + 6, 11, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.shadowBlur = 0;
-  ctx.fillRect(p.w / 2 - 2, -p.h / 2 + 16, 4, p.h - 14);
+  // 髮髻／頭飾尖角
+  ctx.fillStyle = character.beltColor;
+  ctx.beginPath();
+  ctx.moveTo(-4, -p.h / 2 - 4);
+  ctx.lineTo(2, -p.h / 2 - 11);
+  ctx.lineTo(6, -p.h / 2 - 3);
+  ctx.closePath();
+  ctx.fill();
 
-  // 剪影邊緣描邊發光（背光輪廓感）
+  ctx.shadowBlur = 0;
+
+  // 背劍：劍柄、護手、劍身分層繪製
+  const swordX = p.w / 2 - 2;
+  ctx.fillStyle = shadeColor(character.bodyColor, -30);
+  ctx.fillRect(swordX, top + 2, 4, 10); // 劍柄
+  ctx.fillStyle = character.beltColor;
+  ctx.fillRect(swordX - 3, top + 11, 10, 3); // 護手
+  const bladeGrad = ctx.createLinearGradient(swordX, top + 14, swordX, bottom - 2);
+  bladeGrad.addColorStop(0, "#e8eef2");
+  bladeGrad.addColorStop(1, shadeColor(character.rimColor, -10));
+  ctx.fillStyle = bladeGrad;
+  ctx.fillRect(swordX, top + 14, 4, bottom - top - 16); // 劍身
+
+  // 剪影邊緣描邊發光（背光輪廓感，含披風外緣）
   ctx.lineWidth = 2;
   ctx.strokeStyle = rimColor;
   ctx.globalAlpha = alpha * 0.85;
   ctx.beginPath();
-  ctx.moveTo(-p.w / 2, -p.h / 2 + 14);
-  ctx.lineTo(p.w / 2, -p.h / 2 + 14);
-  ctx.lineTo(p.w / 2 + swayR, p.h / 2);
-  ctx.lineTo(-p.w / 2 + swayL, p.h / 2);
+  ctx.moveTo(-p.w / 2, top);
+  ctx.lineTo(p.w / 2, top);
+  ctx.lineTo(p.w / 2 + swayR, bottom);
+  ctx.lineTo(-p.w / 2 + swayL, bottom);
   ctx.closePath();
+  ctx.stroke();
+
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = alpha * 0.4;
+  ctx.beginPath();
+  ctx.moveTo(-p.w / 2 - 3, top + 2);
+  ctx.lineTo(-p.w / 2 - 7 + capeSwayL, bottom + 6);
+  ctx.moveTo(p.w / 2 + 3, top + 2);
+  ctx.lineTo(p.w / 2 + 7 + capeSwayR, bottom + 6);
   ctx.stroke();
 
   // 腰帶
@@ -1340,7 +1533,17 @@ function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   ctx.fillStyle = character.beltColor;
   ctx.fillRect(-p.w / 2, -p.h / 2 + 24, p.w, 3);
 
+  // 眉峰描邊
+  ctx.strokeStyle = rimColor;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = alpha * 0.7;
+  ctx.beginPath();
+  ctx.moveTo(0, -p.h / 2 + 2);
+  ctx.lineTo(7, -p.h / 2 + 1);
+  ctx.stroke();
+
   // 眼神發光點
+  ctx.globalAlpha = alpha;
   ctx.fillStyle = rimColor;
   ctx.shadowColor = rimColor;
   ctx.shadowBlur = 10;
@@ -1409,24 +1612,33 @@ function drawProjectile(proj) {
   ctx.rotate(Math.atan2(proj.vy, proj.vx));
 
   const isQi = proj.kind === "qi";
-  const len = proj.radius * (isQi ? 3.6 : 2.6);
-  const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
+
   if (isQi) {
+    const len = proj.radius * 3.6;
+    const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
     grad.addColorStop(0, "rgba(255,138,58,0)");
     grad.addColorStop(0.6, "#ffd84d");
     grad.addColorStop(1, "#ff8a3a");
+    ctx.fillStyle = grad;
+    ctx.shadowColor = "#ff8a3a";
+    ctx.shadowBlur = 22;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, len / 2, proj.radius, 0, 0, Math.PI * 2);
+    ctx.fill();
   } else {
-    grad.addColorStop(0, "rgba(58,214,255,0)");
-    grad.addColorStop(0.6, "#3ad6ff");
-    grad.addColorStop(1, "#ffffff");
+    // 鏢狀細長菱形剪影，與氣功的發光橢圓彈頭做形狀區分
+    const len = proj.radius * 3.2;
+    ctx.fillStyle = "#3ad6ff";
+    ctx.shadowColor = "#3ad6ff";
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.moveTo(len / 2, 0);
+    ctx.lineTo(-len / 4, -proj.radius * 0.55);
+    ctx.lineTo(-len / 2, 0);
+    ctx.lineTo(-len / 4, proj.radius * 0.55);
+    ctx.closePath();
+    ctx.fill();
   }
-
-  ctx.fillStyle = grad;
-  ctx.shadowColor = isQi ? "#ff8a3a" : "#3ad6ff";
-  ctx.shadowBlur = isQi ? 22 : 12;
-  ctx.beginPath();
-  ctx.ellipse(0, 0, len / 2, proj.radius, 0, 0, Math.PI * 2);
-  ctx.fill();
 
   ctx.restore();
 }
@@ -1447,9 +1659,9 @@ const GRASS_TUFTS = Array.from({ length: 18 }, (_, i) => ({
 }));
 
 function drawBackground() {
-  // 黃昏天空
+  // 黃昏天空，隨關卡推進轉趨深暗
   const skyGrad = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
-  skyGrad.addColorStop(0, "#3a2a4a");
+  skyGrad.addColorStop(0, STAGE_CONFIGS[state.stage].skyTint);
   skyGrad.addColorStop(0.55, "#7a4a5a");
   skyGrad.addColorStop(1, "#c98a5a");
   ctx.fillStyle = skyGrad;
@@ -1525,7 +1737,7 @@ function updateGameScale() {
 }
 
 // ===== 觸控控制：圓形虛擬搖桿 =====
-const JOYSTICK_MAX_DIST = 45;
+const JOYSTICK_MAX_DIST = 33;
 
 function drawJoystick() {
   const w = joystickCanvas.width;
@@ -1538,14 +1750,14 @@ function drawJoystick() {
 
   // 外圈（半透明發光圓環）
   joystickCtx.save();
-  joystickCtx.shadowColor = "rgba(58,214,255,0.8)";
-  joystickCtx.shadowBlur = 14;
-  joystickCtx.fillStyle = "rgba(10,20,30,0.35)";
+  joystickCtx.shadowColor = "rgba(58,214,255,0.5)";
+  joystickCtx.shadowBlur = 10;
+  joystickCtx.fillStyle = "rgba(10,20,30,0.18)";
   joystickCtx.beginPath();
-  joystickCtx.arc(cx, cy, 60, 0, Math.PI * 2);
+  joystickCtx.arc(cx, cy, 44, 0, Math.PI * 2);
   joystickCtx.fill();
   joystickCtx.lineWidth = 2;
-  joystickCtx.strokeStyle = "rgba(58,214,255,0.7)";
+  joystickCtx.strokeStyle = "rgba(58,214,255,0.45)";
   joystickCtx.stroke();
   joystickCtx.restore();
 
@@ -1553,15 +1765,16 @@ function drawJoystick() {
   const knobX = cx + j.knobX;
   const knobY = cy + j.knobY;
   joystickCtx.save();
+  joystickCtx.globalAlpha = 0.75;
   joystickCtx.shadowColor = "rgba(58,214,255,0.95)";
-  joystickCtx.shadowBlur = j.active ? 18 : 8;
-  const knobGrad = joystickCtx.createRadialGradient(knobX, knobY, 2, knobX, knobY, 24);
+  joystickCtx.shadowBlur = j.active ? 13 : 6;
+  const knobGrad = joystickCtx.createRadialGradient(knobX, knobY, 1, knobX, knobY, 17);
   knobGrad.addColorStop(0, "#ffffff");
   knobGrad.addColorStop(0.5, "#3ad6ff");
   knobGrad.addColorStop(1, "#0a3a55");
   joystickCtx.fillStyle = knobGrad;
   joystickCtx.beginPath();
-  joystickCtx.arc(knobX, knobY, 24, 0, Math.PI * 2);
+  joystickCtx.arc(knobX, knobY, 17, 0, Math.PI * 2);
   joystickCtx.fill();
   joystickCtx.restore();
 }
@@ -1651,6 +1864,7 @@ function bindActionButton(btn, triggerFn) {
 // ===== 主迴圈 =====
 function update(dt, timestamp) {
   state.elapsed += dt;
+  updateStage();
   updatePlayer(dt);
   updateAutoAttack(dt);
   updatePalmRecharge(dt);
@@ -1710,7 +1924,10 @@ bindJoystick();
 bindActionButton(document.getElementById("btn-palm"), tryPalmAttack);
 bindActionButton(document.getElementById("btn-qi"), tryQiAttack);
 
-document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
+document.getElementById("btn-fullscreen").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  toggleFullscreen();
+});
 
 // 防止手機多指/雙擊造成瀏覽器原生縮放（CSS touch-action 之外的第二層防護）
 document.addEventListener("gesturestart", (e) => e.preventDefault());

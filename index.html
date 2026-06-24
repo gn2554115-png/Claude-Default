@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>素還真 - 布袋戲打鬥</title>
+<title>青鋒戲影 - 布袋戲打鬥</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -20,7 +20,8 @@
       <div id="palm-charges">●●</div>
     </div>
     <button id="btn-fullscreen" aria-label="全螢幕">⛶</button>
-    <div id="survival-timer"><span id="timer-text">0:00</span></div>
+    <div id="fullscreen-hint" class="hidden"></div>
+    <div id="survival-timer"><span id="timer-text">0:00</span><span id="stage-text">關卡 1</span></div>
     <div id="character-select">
       <h1>選擇角色</h1>
       <div id="character-options"></div>
@@ -36,15 +37,15 @@
 
   <div id="touch-controls">
     <div id="joystick-zone">
-      <canvas id="joystick-canvas" width="150" height="150"></canvas>
+      <canvas id="joystick-canvas" width="110" height="110"></canvas>
     </div>
     <div id="action-buttons">
       <button id="btn-palm" aria-label="掌擊">
-        掌
+        <span class="palm-label">掌</span>
         <span class="cooldown-ring"></span>
         <span class="charge-pip-row" id="palm-pip-row"></span>
       </button>
-      <button id="btn-qi" aria-label="氣功">氣</button>
+      <button id="btn-qi" aria-label="攻擊">攻擊</button>
     </div>
   </div>
 
