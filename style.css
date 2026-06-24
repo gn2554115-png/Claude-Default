@@ -71,6 +71,104 @@ body {
   font-size: 14px;
 }
 
+#level-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#level-text {
+  font-size: 13px;
+  font-weight: bold;
+  color: #ffd84d;
+  white-space: nowrap;
+}
+
+#xp-bar-bg {
+  width: 140px;
+  height: 8px;
+  background: #2a2a10;
+  border: 1px solid #ffd84d;
+}
+
+#xp-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: #ffd84d;
+  transition: width 0.2s;
+}
+
+#palm-charges {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #3ad6ff;
+}
+
+#survival-timer {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #fff;
+  font-size: 20px;
+  font-weight: bold;
+  text-shadow: 1px 1px 2px #000;
+  pointer-events: none;
+}
+
+#level-up-cards {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  z-index: 60;
+  pointer-events: none;
+}
+
+#level-up-cards.hidden {
+  display: none;
+}
+
+.upgrade-card {
+  pointer-events: auto;
+  width: 150px;
+  min-height: 90px;
+  background: rgba(15, 15, 25, 0.9);
+  border: 2px solid #ffd84d;
+  border-radius: 8px;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 0 14px rgba(255, 216, 77, 0.5);
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+
+.upgrade-card:hover,
+.upgrade-card:active {
+  transform: scale(1.05);
+  box-shadow: 0 0 20px rgba(255, 216, 77, 0.85);
+}
+
+.upgrade-key {
+  font-size: 20px;
+  font-weight: bold;
+  color: #ffd84d;
+}
+
+.upgrade-label {
+  line-height: 1.4;
+}
+
 #controls-hint {
   position: absolute;
   bottom: 8px;

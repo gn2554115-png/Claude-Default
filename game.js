@@ -3,28 +3,113 @@ const CANVAS_W = 800;
 const CANVAS_H = 500;
 
 const PLAYER_SPEED = 200; // px/秒
-const PLAYER_MAX_HP = 100;
+const PLAYER_MAX_HP = 150;
 const PLAYER_RADIUS = 18;
+const PLAYER_IFRAME_MS = 700; // 受擊後無敵幀時長
 
-const PALM_RANGE = 50;
-const PALM_DAMAGE = 15;
-const PALM_COOLDOWN = 250; // ms
+// 自動攻擊（核心 DPS，自動朝最近敵人發射追蹤彈）
+const AUTO_ATK_BASE_INTERVAL = 900; // ms
+const AUTO_ATK_BASE_DAMAGE = 8;
+const AUTO_ATK_BASE_COUNT = 1;
+const AUTO_ATK_SPEED = 320;
+const AUTO_ATK_TURN_RATE = 6; // rad/秒
+const AUTO_ATK_RADIUS = 7;
 
-const QI_COOLDOWN = 800; // ms
-const QI_SPEED = 350;
-const QI_DAMAGE = 20;
-const QI_RADIUS = 8;
+// 手動氣功（K，自己按、但會追蹤、較強）
+const QI_COOLDOWN = 1400; // ms
+const QI_SPEED = 380;
+const QI_DAMAGE = 26;
+const QI_RADIUS = 9;
+const QI_TURN_RATE = 8;
+
+// 掌（J，緊急震波 AoE，限充能）
+const PALM_NOVA_RADIUS = 150;
+const PALM_NOVA_DAMAGE = 30;
+const PALM_NOVA_KNOCKBACK = 260;
+const PALM_MAX_CHARGES = 2;
+const PALM_RECHARGE_MS = 8000;
 
 const HURT_EFFECT_DURATION = 150; // ms
 
-const ENEMY_SPAWN_INTERVAL = 1500; // ms
+const ENEMY_SPAWN_INTERVAL_BASE = 1400; // ms
+const ENEMY_SPAWN_INTERVAL_MIN = 350;
+const ENEMY_SPAWN_RAMP_SEC = 60; // 60 秒內生成間隔線性縮短到最小值
 const ENEMY_RADIUS = 16;
 const ENEMY_MAX_HP = 30;
-const ENEMY_SPEED = 80;
-const ENEMY_TOUCH_DAMAGE = 12;
+const ENEMY_HP_RAMP_SEC = 90; // 90 秒內敵人血量緩升到 1.5x
+const ENEMY_SPEED = 70;
+const ENEMY_TOUCH_DAMAGE = 8;
+const ENEMY_KNOCKBACK_RESIST = 0.85;
 const KILL_SCORE = 10;
 
+const XP_BASE_TO_NEXT = 20;
+const XP_GROWTH = 1.35;
+const KILL_XP = 8;
+
 const MAX_PARTICLES = 400;
+
+// ===== 升級池 =====
+const UPGRADE_POOL = [
+  {
+    id: "dmg",
+    label: "掌心雷　自動攻擊傷害 +30%",
+    apply(p) {
+      p.atkDamage = Math.round(p.atkDamage * 1.3);
+    },
+  },
+  {
+    id: "rate",
+    label: "疾風步　自動攻擊速率 +20%",
+    apply(p) {
+      p.atkInterval = Math.max(150, Math.round(p.atkInterval * 0.8));
+    },
+  },
+  {
+    id: "count",
+    label: "分身術　自動攻擊 +1 彈數",
+    apply(p) {
+      p.projCount += 1;
+    },
+  },
+  {
+    id: "move",
+    label: "輕功　移動速度 +15%",
+    apply(p) {
+      p.moveSpeedMult *= 1.15;
+      p.speed = PLAYER_SPEED * p.moveSpeedMult;
+    },
+  },
+  {
+    id: "hp",
+    label: "內力強化　最大HP +30 並回滿",
+    apply(p) {
+      p.maxHp += 30;
+      p.hp = p.maxHp;
+    },
+  },
+  {
+    id: "palmCharge",
+    label: "霸體　掌震波充能上限 +1",
+    apply(p) {
+      p.palmMaxCharges += 1;
+      p.palmCharges += 1;
+    },
+  },
+  {
+    id: "palmRadius",
+    label: "罡氣擴散　掌震波範圍 +20%",
+    apply(p) {
+      p.palmRadius = Math.round(p.palmRadius * 1.2);
+    },
+  },
+  {
+    id: "projSpeed",
+    label: "勁氣加速　彈速 +20%",
+    apply(p) {
+      p.projSpeed = Math.round(p.projSpeed * 1.2);
+    },
+  },
+];
 
 // ===== 全域狀態 =====
 const state = {
@@ -33,12 +118,17 @@ const state = {
   projectiles: [],
   particles: [],
   damageTexts: [],
+  shockwaves: [],
   score: 0,
+  kills: 0,
+  elapsed: 0,
   gameOver: false,
   keys: new Set(),
   lastEnemySpawnTime: 0,
   joystick: { active: false, pointerId: null, knobX: 0, knobY: 0, dx: 0, dy: 0 },
   shake: { time: 0, duration: 0.1, magnitude: 0 },
+  upgradeChoices: [],
+  pendingLevelUps: 0,
 };
 
 function resetState() {
@@ -53,19 +143,37 @@ function resetState() {
     maxHp: PLAYER_MAX_HP,
     speed: PLAYER_SPEED,
     hurtUntil: 0,
-    palmCooldownUntil: 0,
+    invulnUntil: 0,
     qiCooldownUntil: 0,
     animTime: 0,
     trailTimer: 0,
     history: [],
     historyTimer: 0,
     moving: false,
+
+    level: 1,
+    xp: 0,
+    xpToNext: XP_BASE_TO_NEXT,
+    autoAtkTimer: 0,
+    atkDamage: AUTO_ATK_BASE_DAMAGE,
+    atkInterval: AUTO_ATK_BASE_INTERVAL,
+    projCount: AUTO_ATK_BASE_COUNT,
+    projSpeed: AUTO_ATK_SPEED,
+    moveSpeedMult: 1,
+
+    palmCharges: PALM_MAX_CHARGES,
+    palmMaxCharges: PALM_MAX_CHARGES,
+    palmRechargeTimer: 0,
+    palmRadius: PALM_NOVA_RADIUS,
   };
   state.enemies = [];
   state.projectiles = [];
   state.particles = [];
   state.damageTexts = [];
+  state.shockwaves = [];
   state.score = 0;
+  state.kills = 0;
+  state.elapsed = 0;
   state.gameOver = false;
   state.lastEnemySpawnTime = performance.now();
   state.joystick.active = false;
@@ -75,8 +183,13 @@ function resetState() {
   state.joystick.dx = 0;
   state.joystick.dy = 0;
   state.shake.time = 0;
+  state.upgradeChoices = [];
+  state.pendingLevelUps = 0;
 
   document.getElementById("game-over-screen").classList.add("hidden");
+  const cardBox = document.getElementById("level-up-cards");
+  cardBox.innerHTML = "";
+  cardBox.classList.add("hidden");
   updateUI();
 }
 
@@ -102,6 +215,19 @@ function applyDamage(entity, dmg) {
 
 function isHurt(entity) {
   return performance.now() < entity.hurtUntil;
+}
+
+function findNearestEnemy(x, y) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const e of state.enemies) {
+    const d = distance({ x, y }, e);
+    if (d < bestDist) {
+      bestDist = d;
+      best = e;
+    }
+  }
+  return best;
 }
 
 // ===== 粒子系統 =====
@@ -273,6 +399,36 @@ function spawnPalmSlash(hitbox, facing) {
   }
 }
 
+// ===== 擴散震波（掌震波 AoE 特效） =====
+function spawnShockwave(x, y, maxRadius) {
+  state.shockwaves.push({ x, y, radius: 10, maxRadius, life: 0.4, maxLife: 0.4 });
+}
+
+function updateShockwaves(dt) {
+  for (const s of state.shockwaves) {
+    s.life -= dt;
+    const t = 1 - Math.max(0, s.life / s.maxLife);
+    s.radius = 10 + t * (s.maxRadius - 10);
+  }
+  state.shockwaves = state.shockwaves.filter((s) => s.life > 0);
+}
+
+function drawShockwaves() {
+  for (const s of state.shockwaves) {
+    const alpha = Math.max(0, s.life / s.maxLife);
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.8;
+    ctx.strokeStyle = "#3ad6ff";
+    ctx.shadowColor = "#3ad6ff";
+    ctx.shadowBlur = 20;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 // ===== 音效系統 =====
 let audioCtx = null;
 
@@ -341,6 +497,13 @@ function playPalmSound() {
   playNoiseBurst({ duration: 0.05, peak: 0.3 });
 }
 
+function playPalmNovaSound() {
+  // 掌震波 AoE：雙層更厚重的次低音衝擊
+  playTone({ freq: 90, freqEnd: 30, duration: 0.35, type: "sine", peak: 0.55 });
+  playTone({ freq: 55, freqEnd: 20, duration: 0.45, type: "sine", peak: 0.4 });
+  playNoiseBurst({ duration: 0.12, peak: 0.35 });
+}
+
 function playQiFireSound() {
   // 聚氣（頻率緩升）接續發射衝高的單一滑音特效
   const ctx = getAudioCtx();
@@ -375,11 +538,74 @@ function playHurtSound() {
   playTone({ freq: 130, freqEnd: 55, duration: 0.12, type: "sine", peak: 0.28 });
 }
 
+function playLevelUpSound() {
+  const notes = [392, 494, 587, 784];
+  notes.forEach((freq, i) => {
+    setTimeout(() => playTone({ freq, duration: 0.18, type: "triangle", peak: 0.22 }), i * 70);
+  });
+}
+
 function playGameOverSound() {
   const notes = [440, 330, 220];
   notes.forEach((freq, i) => {
     setTimeout(() => playTone({ freq, duration: 0.3, type: "triangle", peak: 0.2 }), i * 180);
   });
+}
+
+// ===== 升級卡（不暫停、邊玩邊選） =====
+function addXp(amount) {
+  const p = state.player;
+  p.xp += amount;
+  while (p.xp >= p.xpToNext) {
+    p.xp -= p.xpToNext;
+    p.level += 1;
+    p.xpToNext = Math.round(XP_BASE_TO_NEXT * Math.pow(XP_GROWTH, p.level - 1));
+    state.pendingLevelUps += 1;
+    playLevelUpSound();
+  }
+}
+
+function sampleUpgrades(n) {
+  const pool = [...UPGRADE_POOL];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, n);
+}
+
+function updateUpgradeQueue() {
+  if (state.upgradeChoices.length === 0 && state.pendingLevelUps > 0) {
+    state.pendingLevelUps -= 1;
+    state.upgradeChoices = sampleUpgrades(3);
+    renderUpgradeCards();
+  }
+}
+
+function renderUpgradeCards() {
+  const container = document.getElementById("level-up-cards");
+  container.innerHTML = "";
+  state.upgradeChoices.forEach((choice, i) => {
+    const card = document.createElement("button");
+    card.className = "upgrade-card";
+    card.innerHTML = `<span class="upgrade-key">${i + 1}</span><span class="upgrade-label">${choice.label}</span>`;
+    card.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      selectUpgrade(i);
+    });
+    container.appendChild(card);
+  });
+  container.classList.remove("hidden");
+}
+
+function selectUpgrade(i) {
+  const choice = state.upgradeChoices[i];
+  if (!choice) return;
+  choice.apply(state.player);
+  state.upgradeChoices = [];
+  const container = document.getElementById("level-up-cards");
+  container.innerHTML = "";
+  container.classList.add("hidden");
 }
 
 // ===== 輸入處理 =====
@@ -389,6 +615,11 @@ window.addEventListener("keydown", (e) => {
 
   if (state.gameOver) {
     if (k === "r") resetAndStart();
+    return;
+  }
+
+  if (state.upgradeChoices.length > 0 && (k === "1" || k === "2" || k === "3")) {
+    selectUpgrade(Number(k) - 1);
     return;
   }
 
@@ -455,29 +686,40 @@ function updatePlayer(dt) {
   }
 }
 
-function tryPalmAttack() {
-  const p = state.player;
-  const now = performance.now();
-  if (now < p.palmCooldownUntil) return;
-  p.palmCooldownUntil = now + PALM_COOLDOWN;
-
-  const hitbox = {
-    x: p.x + p.facing * (PALM_RANGE / 2),
-    y: p.y,
-    radius: PALM_RANGE / 2,
-  };
-
-  spawnPalmSlash(hitbox, p.facing);
-  playPalmSound();
-
-  for (const enemy of state.enemies) {
-    if (circleHit(hitbox, enemy)) {
-      applyDamage(enemy, PALM_DAMAGE);
-      spawnDamageText(enemy.x, enemy.y - enemy.radius, PALM_DAMAGE);
-      triggerShake(0.1, 6);
-      playHitSound();
-    }
+// 發射一批追蹤彈（自動攻擊與手動氣功皆共用）
+function fireHomingVolley(p, target, count, damage, speed, turnRate, radius) {
+  const baseAngle = Math.atan2(target.y - p.y, target.x - p.x);
+  const spread = 0.25;
+  for (let i = 0; i < count; i++) {
+    const offset = count === 1 ? 0 : (i - (count - 1) / 2) * spread;
+    const angle = baseAngle + offset;
+    state.projectiles.push({
+      x: p.x,
+      y: p.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius,
+      damage,
+      homing: true,
+      turnRate,
+      target,
+    });
   }
+}
+
+function updateAutoAttack(dt) {
+  const p = state.player;
+  p.autoAtkTimer -= dt * 1000;
+  if (p.autoAtkTimer > 0) return;
+
+  const target = findNearestEnemy(p.x, p.y);
+  if (!target) {
+    p.autoAtkTimer = 60; // 場上無敵人時稍後再檢查，不浪費攻速
+    return;
+  }
+
+  p.autoAtkTimer = p.atkInterval;
+  fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS);
 }
 
 function tryQiAttack() {
@@ -487,33 +729,106 @@ function tryQiAttack() {
   p.qiCooldownUntil = now + QI_COOLDOWN;
   playQiFireSound();
 
-  state.projectiles.push({
-    x: p.x + p.facing * (p.w / 2),
-    y: p.y,
-    vx: p.facing * QI_SPEED,
-    vy: 0,
-    radius: QI_RADIUS,
-    damage: QI_DAMAGE,
-  });
+  const target = findNearestEnemy(p.x, p.y);
+  if (target) {
+    fireHomingVolley(p, target, 1, QI_DAMAGE, QI_SPEED, QI_TURN_RATE, QI_RADIUS);
+  } else {
+    state.projectiles.push({
+      x: p.x + p.facing * (p.w / 2),
+      y: p.y,
+      vx: p.facing * QI_SPEED,
+      vy: 0,
+      radius: QI_RADIUS,
+      damage: QI_DAMAGE,
+      homing: false,
+    });
+  }
+}
+
+function tryPalmAttack() {
+  const p = state.player;
+  if (p.palmCharges <= 0) return;
+  p.palmCharges -= 1;
+
+  triggerShake(0.25, 14);
+  playPalmNovaSound();
+  spawnShockwave(p.x, p.y, p.palmRadius);
+  spawnExplosion(p.x, p.y, "rgba(58,214,255,0.9)", 20);
+
+  let hitAny = false;
+  for (const enemy of state.enemies) {
+    const d = distance(p, enemy);
+    if (d < p.palmRadius + enemy.radius) {
+      applyDamage(enemy, PALM_NOVA_DAMAGE);
+      spawnDamageText(enemy.x, enemy.y - enemy.radius, PALM_NOVA_DAMAGE);
+      const ang = Math.atan2(enemy.y - p.y, enemy.x - p.x) || 0;
+      enemy.knockVx = Math.cos(ang) * PALM_NOVA_KNOCKBACK;
+      enemy.knockVy = Math.sin(ang) * PALM_NOVA_KNOCKBACK;
+      enemy.knockUntil = performance.now() + 300;
+      hitAny = true;
+    }
+  }
+  if (hitAny) playHitSound();
+}
+
+function updatePalmRecharge(dt) {
+  const p = state.player;
+  if (p.palmCharges >= p.palmMaxCharges) {
+    p.palmRechargeTimer = 0;
+    return;
+  }
+  p.palmRechargeTimer += dt * 1000;
+  if (p.palmRechargeTimer >= PALM_RECHARGE_MS) {
+    p.palmRechargeTimer = 0;
+    p.palmCharges += 1;
+  }
 }
 
 // ===== 敵人邏輯 =====
 function spawnEnemy() {
-  const y = Math.random() * (CANVAS_H - ENEMY_RADIUS * 2) + ENEMY_RADIUS;
+  const margin = 40;
+  const side = Math.floor(Math.random() * 4); // 0 上 1 右 2 下 3 左
+  let x;
+  let y;
+  if (side === 0) {
+    x = Math.random() * CANVAS_W;
+    y = -margin;
+  } else if (side === 1) {
+    x = CANVAS_W + margin;
+    y = Math.random() * CANVAS_H;
+  } else if (side === 2) {
+    x = Math.random() * CANVAS_W;
+    y = CANVAS_H + margin;
+  } else {
+    x = -margin;
+    y = Math.random() * CANVAS_H;
+  }
+
+  const hpRamp = Math.min(state.elapsed / ENEMY_HP_RAMP_SEC, 1);
+  const hp = Math.round(ENEMY_MAX_HP * (1 + hpRamp * 0.5));
+
   state.enemies.push({
-    x: CANVAS_W + 20,
+    x,
     y,
     radius: ENEMY_RADIUS,
-    hp: ENEMY_MAX_HP,
-    maxHp: ENEMY_MAX_HP,
+    hp,
+    maxHp: hp,
     speed: ENEMY_SPEED,
     hurtUntil: 0,
     particleTimer: 0,
+    knockVx: 0,
+    knockVy: 0,
+    knockUntil: 0,
   });
 }
 
+function getEnemySpawnInterval() {
+  const t = Math.min(state.elapsed / ENEMY_SPAWN_RAMP_SEC, 1);
+  return ENEMY_SPAWN_INTERVAL_BASE - t * (ENEMY_SPAWN_INTERVAL_BASE - ENEMY_SPAWN_INTERVAL_MIN);
+}
+
 function updateEnemySpawning(timestamp) {
-  if (timestamp - state.lastEnemySpawnTime > ENEMY_SPAWN_INTERVAL) {
+  if (timestamp - state.lastEnemySpawnTime > getEnemySpawnInterval()) {
     spawnEnemy();
     state.lastEnemySpawnTime = timestamp;
   }
@@ -521,42 +836,80 @@ function updateEnemySpawning(timestamp) {
 
 function updateEnemies(dt) {
   const p = state.player;
+  const now = performance.now();
 
   for (const e of state.enemies) {
     emitEnemyFlame(e, dt);
 
-    const dx = p.x - e.x;
-    const dy = p.y - e.y;
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-    e.x += (dx / dist) * e.speed * dt;
-    e.y += (dy / dist) * e.speed * dt;
+    if (now < e.knockUntil) {
+      e.x += e.knockVx * dt;
+      e.y += e.knockVy * dt;
+      e.knockVx *= ENEMY_KNOCKBACK_RESIST;
+      e.knockVy *= ENEMY_KNOCKBACK_RESIST;
+    } else {
+      const dx = p.x - e.x;
+      const dy = p.y - e.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      e.x += (dx / dist) * e.speed * dt;
+      e.y += (dy / dist) * e.speed * dt;
+    }
   }
 
-  // 先清除被打死的敵人並加分，避免已被擊殺的敵人在同一幀又被誤判成「碰到玩家」
+  // 先清除被打死的敵人：加分、加經驗、爆炸特效
   state.enemies = state.enemies.filter((e) => {
     if (e.hp <= 0) {
       state.score += KILL_SCORE;
+      state.kills += 1;
       spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)", 20);
       playKillSound();
+      addXp(KILL_XP);
       return false;
     }
     return true;
   });
 
-  // 敵人碰到玩家：扣血、觸發受傷特效、敵人消失
-  state.enemies = state.enemies.filter((e) => {
-    if (circleHit(p, e)) {
+  // 接觸傷害：無敵幀節流（不會同幀被多隻瞬殺），敵人本身不會因碰撞消失，
+  // 但仍給觸碰中的敵人一點擊退，避免疊在玩家身上
+  let damaged = false;
+  for (const e of state.enemies) {
+    if (!circleHit(p, e) || now < e.knockUntil) continue;
+
+    const ang = Math.atan2(e.y - p.y, e.x - p.x) || 0;
+    e.knockVx = Math.cos(ang) * 90;
+    e.knockVy = Math.sin(ang) * 90;
+    e.knockUntil = now + 150;
+
+    if (!damaged && now > p.invulnUntil) {
       applyDamage(p, ENEMY_TOUCH_DAMAGE);
+      p.invulnUntil = now + PLAYER_IFRAME_MS;
+      triggerShake(0.15, 8);
       playHurtSound();
-      return false;
+      damaged = true;
     }
-    return true;
-  });
+  }
 }
 
-// ===== 氣功彈邏輯 =====
+// ===== 彈道邏輯（自動攻擊 / 手動氣功 共用） =====
 function updateProjectiles(dt) {
   for (const proj of state.projectiles) {
+    if (proj.homing) {
+      if (!proj.target || proj.target.hp <= 0 || !state.enemies.includes(proj.target)) {
+        proj.target = findNearestEnemy(proj.x, proj.y);
+      }
+      if (proj.target) {
+        const desiredAngle = Math.atan2(proj.target.y - proj.y, proj.target.x - proj.x);
+        const curAngle = Math.atan2(proj.vy, proj.vx);
+        let diff = desiredAngle - curAngle;
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+        const maxTurn = proj.turnRate * dt;
+        const turn = clamp(diff, -maxTurn, maxTurn);
+        const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy);
+        const newAngle = curAngle + turn;
+        proj.vx = Math.cos(newAngle) * speed;
+        proj.vy = Math.sin(newAngle) * speed;
+      }
+    }
+
     proj.x += proj.vx * dt;
     proj.y += proj.vy * dt;
     emitQiTrail(proj);
@@ -609,6 +962,16 @@ function updateUI() {
   const fill = document.getElementById("hp-bar-fill");
   fill.style.width = `${pct}%`;
   fill.style.background = pct > 50 ? "#2ecc71" : pct > 20 ? "#f39c12" : "#e74c3c";
+
+  document.getElementById("level-text").textContent = `等級 ${p.level}`;
+  const xpPct = (p.xp / p.xpToNext) * 100;
+  document.getElementById("xp-bar-fill").style.width = `${xpPct}%`;
+
+  const mins = Math.floor(state.elapsed / 60);
+  const secs = Math.floor(state.elapsed % 60);
+  document.getElementById("timer-text").textContent = `${mins}:${String(secs).padStart(2, "0")}`;
+
+  document.getElementById("palm-charges").textContent = `掌震波 ${p.palmCharges}/${p.palmMaxCharges}`;
 }
 
 // ===== 渲染 =====
@@ -819,6 +1182,7 @@ function render() {
   drawBackground();
   for (const e of state.enemies) drawEnemy(e);
   drawParticles();
+  drawShockwaves();
   for (const proj of state.projectiles) drawProjectile(proj);
   drawPlayer();
   drawDamageTexts();
@@ -963,12 +1327,17 @@ function bindActionButton(btn, triggerFn) {
 
 // ===== 主迴圈 =====
 function update(dt, timestamp) {
+  state.elapsed += dt;
   updatePlayer(dt);
+  updateAutoAttack(dt);
+  updatePalmRecharge(dt);
   updateEnemySpawning(timestamp);
   updateEnemies(dt);
   updateProjectiles(dt);
   updateParticles(dt);
   updateDamageTexts(dt);
+  updateShockwaves(dt);
+  updateUpgradeQueue();
 
   if (state.shake.time > 0) {
     state.shake.time = Math.max(0, state.shake.time - dt);
