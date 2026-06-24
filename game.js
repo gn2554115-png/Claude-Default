@@ -1,6 +1,6 @@
 // ===== 常數設定 =====
-const CANVAS_W = 800;
-const CANVAS_H = 500;
+const CANVAS_W = 450;
+const CANVAS_H = 800;
 
 const PLAYER_SPEED = 200; // px/秒
 const PLAYER_MAX_HP = 150;
@@ -22,12 +22,19 @@ const QI_DAMAGE = 26;
 const QI_RADIUS = 9;
 const QI_TURN_RATE = 8;
 
-// 掌（J，緊急震波 AoE，限充能）
-const PALM_NOVA_RADIUS = 150;
+// 掌技（J，限定充能的爆發技，依角色不同造型）
+const PALM_NOVA_RADIUS = 220;
 const PALM_NOVA_DAMAGE = 30;
 const PALM_NOVA_KNOCKBACK = 260;
 const PALM_MAX_CHARGES = 2;
 const PALM_RECHARGE_MS = 8000;
+
+// 分身術（第二角色掌技替換：漩渦旋轉分身擴散攻擊）
+const SPIRAL_COUNT = 8;
+const SPIRAL_DURATION = 0.6; // 秒
+const SPIRAL_BLADE_RADIUS = 12;
+const SPIRAL_BLADE_DAMAGE = Math.round(PALM_NOVA_DAMAGE * 0.6);
+const SPIRAL_SPIN = 9; // rad/秒
 
 const HURT_EFFECT_DURATION = 150; // ms
 
@@ -42,38 +49,73 @@ const ENEMY_TOUCH_DAMAGE = 8;
 const ENEMY_KNOCKBACK_RESIST = 0.85;
 const KILL_SCORE = 10;
 
+// 敵人變種：較大較慢、血厚的「悍敵」，需存活一段時間後才會出現
+const ENEMY_BRUTE_MIN_ELAPSED = 18; // 秒
+const ENEMY_BRUTE_CHANCE = 0.22;
+const ENEMY_BRUTE_HP_MULT = 2.4;
+const ENEMY_BRUTE_RADIUS = 24;
+const ENEMY_BRUTE_SPEED_MULT = 0.55;
+const ENEMY_BRUTE_TOUCH_MULT = 1.6;
+const ENEMY_BRUTE_SCORE_MULT = 2;
+
 const XP_BASE_TO_NEXT = 20;
 const XP_GROWTH = 1.35;
 const KILL_XP = 8;
 
 const MAX_PARTICLES = 400;
 
+// ===== 角色設定 =====
+const CHARACTERS = [
+  {
+    id: "suhuanzhen",
+    name: "素還真",
+    rimColor: "#3ad6ff",
+    bodyColor: "#11131c",
+    beltColor: "#ffd84d",
+    desc: "掌震波 AoE　震退四周敵人",
+    palmAbility: "nova",
+  },
+  {
+    id: "yexuan",
+    name: "夜玄",
+    rimColor: "#c060ff",
+    bodyColor: "#160a1f",
+    beltColor: "#ff5fd1",
+    desc: "分身術　漩渦擴散攻擊",
+    palmAbility: "spiral",
+  },
+];
+
 // ===== 升級池 =====
 const UPGRADE_POOL = [
   {
     id: "dmg",
-    label: "掌心雷　自動攻擊傷害 +30%",
+    name: "掌心雷",
+    stat: "攻擊 +30%",
     apply(p) {
       p.atkDamage = Math.round(p.atkDamage * 1.3);
     },
   },
   {
     id: "rate",
-    label: "疾風步　自動攻擊速率 +20%",
+    name: "疾風步",
+    stat: "攻速 +20%",
     apply(p) {
       p.atkInterval = Math.max(150, Math.round(p.atkInterval * 0.8));
     },
   },
   {
     id: "count",
-    label: "分身術　自動攻擊 +1 彈數",
+    name: "璇璣彈",
+    stat: "彈數 +1",
     apply(p) {
       p.projCount += 1;
     },
   },
   {
     id: "move",
-    label: "輕功　移動速度 +15%",
+    name: "輕功",
+    stat: "移速 +15%",
     apply(p) {
       p.moveSpeedMult *= 1.15;
       p.speed = PLAYER_SPEED * p.moveSpeedMult;
@@ -81,7 +123,8 @@ const UPGRADE_POOL = [
   },
   {
     id: "hp",
-    label: "內力強化　最大HP +30 並回滿",
+    name: "內力強化",
+    stat: "體力 +30",
     apply(p) {
       p.maxHp += 30;
       p.hp = p.maxHp;
@@ -89,7 +132,8 @@ const UPGRADE_POOL = [
   },
   {
     id: "palmCharge",
-    label: "霸體　掌震波充能上限 +1",
+    name: "霸體",
+    stat: "掌技充能 +1",
     apply(p) {
       p.palmMaxCharges += 1;
       p.palmCharges += 1;
@@ -97,14 +141,16 @@ const UPGRADE_POOL = [
   },
   {
     id: "palmRadius",
-    label: "罡氣擴散　掌震波範圍 +20%",
+    name: "罡氣擴散",
+    stat: "掌技範圍 +20%",
     apply(p) {
       p.palmRadius = Math.round(p.palmRadius * 1.2);
     },
   },
   {
     id: "projSpeed",
-    label: "勁氣加速　彈速 +20%",
+    name: "勁氣加速",
+    stat: "彈速 +20%",
     apply(p) {
       p.projSpeed = Math.round(p.projSpeed * 1.2);
     },
@@ -113,12 +159,15 @@ const UPGRADE_POOL = [
 
 // ===== 全域狀態 =====
 const state = {
+  started: false,
+  characterId: CHARACTERS[0].id,
   player: null,
   enemies: [],
   projectiles: [],
   particles: [],
   damageTexts: [],
   shockwaves: [],
+  spirals: [],
   score: 0,
   kills: 0,
   elapsed: 0,
@@ -131,9 +180,12 @@ const state = {
   pendingLevelUps: 0,
 };
 
-function resetState() {
+function resetState(characterId) {
+  state.characterId = characterId || state.characterId || CHARACTERS[0].id;
+  const character = CHARACTERS.find((c) => c.id === state.characterId) || CHARACTERS[0];
+
   state.player = {
-    x: 120,
+    x: CANVAS_W / 2,
     y: CANVAS_H / 2,
     radius: PLAYER_RADIUS,
     w: 30,
@@ -150,6 +202,7 @@ function resetState() {
     history: [],
     historyTimer: 0,
     moving: false,
+    character,
 
     level: 1,
     xp: 0,
@@ -171,6 +224,7 @@ function resetState() {
   state.particles = [];
   state.damageTexts = [];
   state.shockwaves = [];
+  state.spirals = [];
   state.score = 0;
   state.kills = 0;
   state.elapsed = 0;
@@ -186,6 +240,7 @@ function resetState() {
   state.upgradeChoices = [];
   state.pendingLevelUps = 0;
 
+  setBgmVolume(BGM_NORMAL_VOLUME);
   document.getElementById("game-over-screen").classList.add("hidden");
   const cardBox = document.getElementById("level-up-cards");
   cardBox.innerHTML = "";
@@ -285,15 +340,16 @@ function emitEnemyFlame(e, dt) {
 }
 
 function emitQiTrail(proj) {
+  const isQi = proj.kind === "qi";
   spawnParticle({
     x: proj.x,
     y: proj.y,
     vx: 0,
     vy: 0,
-    life: 0.25,
-    maxLife: 0.25,
-    size: 3,
-    color: "rgba(255,216,77,0.8)",
+    life: isQi ? 0.3 : 0.18,
+    maxLife: isQi ? 0.3 : 0.18,
+    size: isQi ? 4 : 2.5,
+    color: isQi ? "rgba(255,138,58,0.85)" : "rgba(58,214,255,0.7)",
     type: "trail",
     glow: false,
   });
@@ -445,6 +501,102 @@ function getAudioCtx() {
 function unlockAudio() {
   const ctx = getAudioCtx();
   if (ctx && ctx.state === "suspended") ctx.resume();
+  startBgm();
+}
+
+// ===== 背景音樂（Web Audio 排程迴圈，獨立音量、與 SFX 共用 AudioContext） =====
+const BGM_NORMAL_VOLUME = 0.07;
+const BGM_GAMEOVER_VOLUME = 0.025;
+const BGM_TEMPO = 96; // BPM
+const BGM_STEP_SEC = 60 / BGM_TEMPO / 2; // 八分音符
+const BGM_SCALE = [196.0, 220.0, 246.94, 293.66, 329.63]; // G 五聲音階
+const BGM_PATTERN = [0, 2, 1, 3, 2, 4, 3, 1];
+
+let bgmGain = null;
+let bgmNextStepTime = 0;
+let bgmStepIndex = 0;
+let bgmTimer = null;
+let bgmStarted = false;
+
+function ensureBgmGain() {
+  const ctx = getAudioCtx();
+  if (!ctx) return null;
+  if (!bgmGain) {
+    bgmGain = ctx.createGain();
+    bgmGain.gain.value = BGM_NORMAL_VOLUME;
+    bgmGain.connect(ctx.destination);
+  }
+  return bgmGain;
+}
+
+function setBgmVolume(vol) {
+  const gain = ensureBgmGain();
+  const ctx = getAudioCtx();
+  if (!gain || !ctx) return;
+  gain.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.6);
+}
+
+function scheduleBgmStep(time) {
+  const ctx = getAudioCtx();
+  const gain = ensureBgmGain();
+  if (!ctx || !gain) return;
+
+  if (bgmStepIndex % 4 === 0) {
+    const drone = ctx.createOscillator();
+    const droneGain = ctx.createGain();
+    drone.type = "sine";
+    drone.frequency.value = BGM_SCALE[0] / 2;
+    droneGain.gain.setValueAtTime(0.001, time);
+    droneGain.gain.linearRampToValueAtTime(0.5, time + 0.3);
+    droneGain.gain.exponentialRampToValueAtTime(0.001, time + BGM_STEP_SEC * 4);
+    drone.connect(droneGain);
+    droneGain.connect(gain);
+    drone.start(time);
+    drone.stop(time + BGM_STEP_SEC * 4 + 0.05);
+  }
+
+  const note = BGM_PATTERN[bgmStepIndex % BGM_PATTERN.length];
+  const freq = BGM_SCALE[note];
+  const osc = ctx.createOscillator();
+  const oscGain = ctx.createGain();
+  osc.type = "triangle";
+  osc.frequency.value = freq;
+  oscGain.gain.setValueAtTime(0.001, time);
+  oscGain.gain.linearRampToValueAtTime(0.4, time + 0.02);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, time + BGM_STEP_SEC * 0.9);
+  osc.connect(oscGain);
+  oscGain.connect(gain);
+  osc.start(time);
+  osc.stop(time + BGM_STEP_SEC);
+
+  bgmStepIndex += 1;
+}
+
+function bgmSchedulerTick() {
+  const ctx = getAudioCtx();
+  if (!ctx || !bgmStarted) return;
+  while (bgmNextStepTime < ctx.currentTime + 0.15) {
+    scheduleBgmStep(bgmNextStepTime);
+    bgmNextStepTime += BGM_STEP_SEC;
+  }
+}
+
+function startBgm() {
+  const ctx = getAudioCtx();
+  if (!ctx || bgmStarted) return;
+  bgmStarted = true;
+  ensureBgmGain();
+  bgmNextStepTime = ctx.currentTime + 0.1;
+  bgmStepIndex = 0;
+  bgmTimer = setInterval(bgmSchedulerTick, 100);
+}
+
+function stopBgm() {
+  bgmStarted = false;
+  if (bgmTimer) {
+    clearInterval(bgmTimer);
+    bgmTimer = null;
+  }
 }
 
 function playTone({ freq, duration, type = "sine", peak = 0.2, freqEnd }) {
@@ -588,7 +740,7 @@ function renderUpgradeCards() {
   state.upgradeChoices.forEach((choice, i) => {
     const card = document.createElement("button");
     card.className = "upgrade-card";
-    card.innerHTML = `<span class="upgrade-key">${i + 1}</span><span class="upgrade-label">${choice.label}</span>`;
+    card.innerHTML = `<span class="upgrade-key">${i + 1}</span><span class="upgrade-text"><span class="upgrade-name">${choice.name}</span><span class="upgrade-stat">${choice.stat}</span></span>`;
     card.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       selectUpgrade(i);
@@ -612,6 +764,8 @@ function selectUpgrade(i) {
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   state.keys.add(k);
+
+  if (!state.started) return;
 
   if (state.gameOver) {
     if (k === "r") resetAndStart();
@@ -687,7 +841,7 @@ function updatePlayer(dt) {
 }
 
 // 發射一批追蹤彈（自動攻擊與手動氣功皆共用）
-function fireHomingVolley(p, target, count, damage, speed, turnRate, radius) {
+function fireHomingVolley(p, target, count, damage, speed, turnRate, radius, kind) {
   const baseAngle = Math.atan2(target.y - p.y, target.x - p.x);
   const spread = 0.25;
   for (let i = 0; i < count; i++) {
@@ -703,6 +857,7 @@ function fireHomingVolley(p, target, count, damage, speed, turnRate, radius) {
       homing: true,
       turnRate,
       target,
+      kind,
     });
   }
 }
@@ -719,7 +874,7 @@ function updateAutoAttack(dt) {
   }
 
   p.autoAtkTimer = p.atkInterval;
-  fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS);
+  fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS, "auto");
 }
 
 function tryQiAttack() {
@@ -731,7 +886,7 @@ function tryQiAttack() {
 
   const target = findNearestEnemy(p.x, p.y);
   if (target) {
-    fireHomingVolley(p, target, 1, QI_DAMAGE, QI_SPEED, QI_TURN_RATE, QI_RADIUS);
+    fireHomingVolley(p, target, 1, QI_DAMAGE, QI_SPEED, QI_TURN_RATE, QI_RADIUS, "qi");
   } else {
     state.projectiles.push({
       x: p.x + p.facing * (p.w / 2),
@@ -741,6 +896,7 @@ function tryQiAttack() {
       radius: QI_RADIUS,
       damage: QI_DAMAGE,
       homing: false,
+      kind: "qi",
     });
   }
 }
@@ -750,6 +906,14 @@ function tryPalmAttack() {
   if (p.palmCharges <= 0) return;
   p.palmCharges -= 1;
 
+  if (p.character && p.character.palmAbility === "spiral") {
+    palmSpiral(p);
+  } else {
+    palmNova(p);
+  }
+}
+
+function palmNova(p) {
   triggerShake(0.25, 14);
   playPalmNovaSound();
   spawnShockwave(p.x, p.y, p.palmRadius);
@@ -769,6 +933,71 @@ function tryPalmAttack() {
     }
   }
   if (hitAny) playHitSound();
+}
+
+function palmSpiral(p) {
+  triggerShake(0.2, 10);
+  playPalmNovaSound();
+  spawnExplosion(p.x, p.y, "rgba(192,96,255,0.9)", 16);
+
+  for (let i = 0; i < SPIRAL_COUNT; i++) {
+    state.spirals.push({
+      x: p.x,
+      y: p.y,
+      angle: (Math.PI * 2 * i) / SPIRAL_COUNT,
+      radius: 10,
+      life: SPIRAL_DURATION,
+      maxLife: SPIRAL_DURATION,
+      hitSet: new Set(),
+    });
+  }
+}
+
+function updateSpirals(dt) {
+  const p = state.player;
+  for (const s of state.spirals) {
+    s.life -= dt;
+    const t = 1 - Math.max(0, s.life / s.maxLife);
+    s.angle += SPIRAL_SPIN * dt;
+    s.radius = 10 + t * (p.palmRadius - 10);
+    s.x = p.x + Math.cos(s.angle) * s.radius;
+    s.y = p.y + Math.sin(s.angle) * s.radius;
+
+    for (const enemy of state.enemies) {
+      if (s.hitSet.has(enemy) || enemy.hp <= 0) continue;
+      if (distance(s, enemy) < SPIRAL_BLADE_RADIUS + enemy.radius) {
+        applyDamage(enemy, SPIRAL_BLADE_DAMAGE);
+        spawnDamageText(enemy.x, enemy.y - enemy.radius, SPIRAL_BLADE_DAMAGE);
+        const ang = Math.atan2(enemy.y - p.y, enemy.x - p.x) || 0;
+        enemy.knockVx = Math.cos(ang) * (PALM_NOVA_KNOCKBACK * 0.6);
+        enemy.knockVy = Math.sin(ang) * (PALM_NOVA_KNOCKBACK * 0.6);
+        enemy.knockUntil = performance.now() + 250;
+        s.hitSet.add(enemy);
+        playHitSound();
+      }
+    }
+  }
+  state.spirals = state.spirals.filter((s) => s.life > 0);
+}
+
+function drawSpirals() {
+  for (const s of state.spirals) {
+    const alpha = Math.max(0, s.life / s.maxLife);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.angle);
+    ctx.fillStyle = "#c060ff";
+    ctx.shadowColor = "#c060ff";
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.moveTo(-SPIRAL_BLADE_RADIUS, 0);
+    ctx.lineTo(SPIRAL_BLADE_RADIUS, -4);
+    ctx.lineTo(SPIRAL_BLADE_RADIUS, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 function updatePalmRecharge(dt) {
@@ -805,15 +1034,28 @@ function spawnEnemy() {
   }
 
   const hpRamp = Math.min(state.elapsed / ENEMY_HP_RAMP_SEC, 1);
-  const hp = Math.round(ENEMY_MAX_HP * (1 + hpRamp * 0.5));
+  const baseHp = Math.round(ENEMY_MAX_HP * (1 + hpRamp * 0.5));
+
+  const isBrute = state.elapsed >= ENEMY_BRUTE_MIN_ELAPSED && Math.random() < ENEMY_BRUTE_CHANCE;
+  const type = isBrute ? "brute" : "normal";
+  const radius = isBrute ? ENEMY_BRUTE_RADIUS : ENEMY_RADIUS;
+  const hp = isBrute ? Math.round(baseHp * ENEMY_BRUTE_HP_MULT) : baseHp;
+  const speed = isBrute ? ENEMY_SPEED * ENEMY_BRUTE_SPEED_MULT : ENEMY_SPEED;
+  const touchDamage = isBrute ? Math.round(ENEMY_TOUCH_DAMAGE * ENEMY_BRUTE_TOUCH_MULT) : ENEMY_TOUCH_DAMAGE;
+  const killScore = isBrute ? KILL_SCORE * ENEMY_BRUTE_SCORE_MULT : KILL_SCORE;
+  const killXp = isBrute ? KILL_XP * ENEMY_BRUTE_SCORE_MULT : KILL_XP;
 
   state.enemies.push({
     x,
     y,
-    radius: ENEMY_RADIUS,
+    type,
+    radius,
     hp,
     maxHp: hp,
-    speed: ENEMY_SPEED,
+    speed,
+    touchDamage,
+    killScore,
+    killXp,
     hurtUntil: 0,
     particleTimer: 0,
     knockVx: 0,
@@ -858,11 +1100,11 @@ function updateEnemies(dt) {
   // 先清除被打死的敵人：加分、加經驗、爆炸特效
   state.enemies = state.enemies.filter((e) => {
     if (e.hp <= 0) {
-      state.score += KILL_SCORE;
+      state.score += e.killScore;
       state.kills += 1;
       spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)", 20);
       playKillSound();
-      addXp(KILL_XP);
+      addXp(e.killXp);
       return false;
     }
     return true;
@@ -880,7 +1122,7 @@ function updateEnemies(dt) {
     e.knockUntil = now + 150;
 
     if (!damaged && now > p.invulnUntil) {
-      applyDamage(p, ENEMY_TOUCH_DAMAGE);
+      applyDamage(p, e.touchDamage);
       p.invulnUntil = now + PLAYER_IFRAME_MS;
       triggerShake(0.15, 8);
       playHurtSound();
@@ -944,11 +1186,59 @@ function triggerGameOver() {
   document.getElementById("final-score").textContent = `最終分數: ${state.score}`;
   document.getElementById("game-over-screen").classList.remove("hidden");
   playGameOverSound();
+  setBgmVolume(BGM_GAMEOVER_VOLUME);
 }
 
 function resetAndStart() {
   resetState();
   requestAnimationFrame(gameLoop);
+}
+
+// ===== 角色選擇畫面 =====
+function renderCharacterSelect() {
+  const container = document.getElementById("character-options");
+  container.innerHTML = "";
+  CHARACTERS.forEach((c) => {
+    const card = document.createElement("button");
+    card.className = "character-card";
+    card.innerHTML = `<div class="character-swatch" style="background:${c.bodyColor};border:2px solid ${c.rimColor};box-shadow:0 0 10px ${c.rimColor};"></div><span class="character-name">${c.name}</span><span class="character-desc">${c.desc}</span>`;
+    card.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      startGameWithCharacter(c.id);
+    });
+    container.appendChild(card);
+  });
+}
+
+function startGameWithCharacter(id) {
+  document.getElementById("character-select").classList.add("hidden");
+  resetState(id);
+  state.started = true;
+  unlockAudio();
+  attemptAutoFullscreen();
+}
+
+// ===== 全螢幕 =====
+function toggleFullscreen() {
+  const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+  if (isFs) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) exit.call(document);
+  } else {
+    attemptAutoFullscreen();
+  }
+}
+
+function attemptAutoFullscreen() {
+  const el = document.documentElement;
+  const request = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!request) return;
+  try {
+    const result = request.call(el);
+    if (result && result.catch) result.catch(() => {});
+  } catch (err) {
+    // 部分瀏覽器（如 iOS Safari）不支援全螢幕 API，靜默忽略
+  }
 }
 
 // ===== UI 更新 =====
@@ -971,7 +1261,25 @@ function updateUI() {
   const secs = Math.floor(state.elapsed % 60);
   document.getElementById("timer-text").textContent = `${mins}:${String(secs).padStart(2, "0")}`;
 
-  document.getElementById("palm-charges").textContent = `掌震波 ${p.palmCharges}/${p.palmMaxCharges}`;
+  document.getElementById("palm-charges").textContent =
+    "●".repeat(p.palmCharges) + "○".repeat(Math.max(0, p.palmMaxCharges - p.palmCharges));
+
+  const palmBtn = document.getElementById("btn-palm");
+  const progress = p.palmCharges >= p.palmMaxCharges ? 1 : p.palmRechargeTimer / PALM_RECHARGE_MS;
+  palmBtn.style.setProperty("--cd", String(1 - progress));
+
+  const pipRow = document.getElementById("palm-pip-row");
+  if (pipRow.children.length !== p.palmMaxCharges) {
+    pipRow.innerHTML = "";
+    for (let i = 0; i < p.palmMaxCharges; i++) {
+      const pip = document.createElement("span");
+      pip.className = "charge-pip";
+      pipRow.appendChild(pip);
+    }
+  }
+  for (let i = 0; i < pipRow.children.length; i++) {
+    pipRow.children[i].classList.toggle("filled", i < p.palmCharges);
+  }
 }
 
 // ===== 渲染 =====
@@ -982,12 +1290,13 @@ const joystickCtx = joystickCanvas.getContext("2d");
 
 function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   const p = state.player;
+  const character = p.character || CHARACTERS[0];
   const wobbleFreq = moving ? 10 : 3;
   const wobbleAmp = moving ? 2 : 1;
   const bob = Math.sin(animTime * wobbleFreq) * wobbleAmp;
   const swayL = Math.sin(animTime * wobbleFreq) * 3;
   const swayR = Math.sin(animTime * wobbleFreq + Math.PI) * 3;
-  const rimColor = hurt ? "#ff4444" : "#3ad6ff";
+  const rimColor = hurt ? "#ff4444" : character.rimColor;
 
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -995,7 +1304,7 @@ function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   if (facing < 0) ctx.scale(-1, 1);
 
   // 古風剪影身形（長袍 + 背劍），背光發光剪影感
-  ctx.fillStyle = "#0c0c14";
+  ctx.fillStyle = character.bodyColor;
   ctx.shadowColor = rimColor;
   ctx.shadowBlur = 14;
 
@@ -1026,9 +1335,9 @@ function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   ctx.closePath();
   ctx.stroke();
 
-  // 腰帶（金色點綴）
+  // 腰帶
   ctx.globalAlpha = alpha;
-  ctx.fillStyle = "#ffd84d";
+  ctx.fillStyle = character.beltColor;
   ctx.fillRect(-p.w / 2, -p.h / 2 + 24, p.w, 3);
 
   // 眼神發光點
@@ -1058,6 +1367,7 @@ function drawPlayer() {
 
 function drawEnemy(e) {
   const hurt = isHurt(e);
+  const isBrute = e.type === "brute";
 
   ctx.save();
   ctx.translate(e.x, e.y);
@@ -1065,15 +1375,19 @@ function drawEnemy(e) {
   const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, e.radius);
   if (hurt) {
     grad.addColorStop(0, "#ffffff");
-    grad.addColorStop(1, "#ff2222");
+    grad.addColorStop(1, isBrute ? "#ff5500" : "#ff2222");
+  } else if (isBrute) {
+    grad.addColorStop(0, "#ffaa55");
+    grad.addColorStop(0.6, "#d9530a");
+    grad.addColorStop(1, "#4d1a05");
   } else {
     grad.addColorStop(0, "#ff66cc");
     grad.addColorStop(0.6, "#9b30d9");
     grad.addColorStop(1, "#3a0a4d");
   }
   ctx.fillStyle = grad;
-  ctx.shadowColor = "#c040ff";
-  ctx.shadowBlur = 14;
+  ctx.shadowColor = isBrute ? "#ff6a00" : "#c040ff";
+  ctx.shadowBlur = isBrute ? 20 : 14;
   ctx.beginPath();
   ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
   ctx.fill();
@@ -1094,15 +1408,22 @@ function drawProjectile(proj) {
   ctx.translate(proj.x, proj.y);
   ctx.rotate(Math.atan2(proj.vy, proj.vx));
 
-  const len = proj.radius * 3;
+  const isQi = proj.kind === "qi";
+  const len = proj.radius * (isQi ? 3.6 : 2.6);
   const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
-  grad.addColorStop(0, "rgba(255,216,77,0)");
-  grad.addColorStop(0.6, "#ffd84d");
-  grad.addColorStop(1, "#ffffff");
+  if (isQi) {
+    grad.addColorStop(0, "rgba(255,138,58,0)");
+    grad.addColorStop(0.6, "#ffd84d");
+    grad.addColorStop(1, "#ff8a3a");
+  } else {
+    grad.addColorStop(0, "rgba(58,214,255,0)");
+    grad.addColorStop(0.6, "#3ad6ff");
+    grad.addColorStop(1, "#ffffff");
+  }
 
   ctx.fillStyle = grad;
-  ctx.shadowColor = "#ffd84d";
-  ctx.shadowBlur = 16;
+  ctx.shadowColor = isQi ? "#ff8a3a" : "#3ad6ff";
+  ctx.shadowBlur = isQi ? 22 : 12;
   ctx.beginPath();
   ctx.ellipse(0, 0, len / 2, proj.radius, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -1113,10 +1434,10 @@ function drawProjectile(proj) {
 const HORIZON_Y = CANVAS_H * 0.65;
 
 const FAR_MOUNTAINS = [
-  { baseX: 60, width: 220, height: 70 },
-  { baseX: 280, width: 260, height: 95 },
-  { baseX: 520, width: 240, height: 75 },
-  { baseX: 720, width: 200, height: 60 },
+  { baseX: 30, width: 130, height: 55 },
+  { baseX: 150, width: 160, height: 80 },
+  { baseX: 300, width: 150, height: 60 },
+  { baseX: 420, width: 120, height: 45 },
 ];
 
 const GRASS_TUFTS = Array.from({ length: 18 }, (_, i) => ({
@@ -1184,6 +1505,7 @@ function render() {
   drawParticles();
   drawShockwaves();
   for (const proj of state.projectiles) drawProjectile(proj);
+  drawSpirals();
   drawPlayer();
   drawDamageTexts();
 
@@ -1310,6 +1632,7 @@ function bindActionButton(btn, triggerFn) {
     } catch (err) {
       // ignore unsupported environments
     }
+    if (!state.started) return;
     if (state.gameOver) {
       resetAndStart();
     } else {
@@ -1334,6 +1657,7 @@ function update(dt, timestamp) {
   updateEnemySpawning(timestamp);
   updateEnemies(dt);
   updateProjectiles(dt);
+  updateSpirals(dt);
   updateParticles(dt);
   updateDamageTexts(dt);
   updateShockwaves(dt);
@@ -1355,6 +1679,11 @@ function gameLoop(timestamp) {
   const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
   lastTime = timestamp;
 
+  if (!state.started) {
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+
   if (state.gameOver) {
     render();
     return;
@@ -1366,7 +1695,8 @@ function gameLoop(timestamp) {
 }
 
 // ===== 啟動 =====
-resetState();
+resetState(CHARACTERS[0].id);
+renderCharacterSelect();
 lastTime = performance.now();
 requestAnimationFrame(gameLoop);
 
@@ -1379,6 +1709,19 @@ window.addEventListener("orientationchange", () => {
 bindJoystick();
 bindActionButton(document.getElementById("btn-palm"), tryPalmAttack);
 bindActionButton(document.getElementById("btn-qi"), tryQiAttack);
+
+document.getElementById("btn-fullscreen").addEventListener("click", toggleFullscreen);
+
+// 防止手機多指/雙擊造成瀏覽器原生縮放（CSS touch-action 之外的第二層防護）
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+document.addEventListener(
+  "touchmove",
+  (e) => {
+    if (e.touches.length > 1) e.preventDefault();
+  },
+  { passive: false }
+);
+document.addEventListener("dblclick", (e) => e.preventDefault());
 
 window.addEventListener("keydown", unlockAudio, { once: true });
 document.addEventListener("pointerdown", unlockAudio, { once: true });
