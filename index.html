@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>素還真 - 布袋戲打鬥</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+    <div id="ui-overlay">
+      <div id="score">分數: 0</div>
+      <div id="hp-bar-bg"><div id="hp-bar-fill"></div></div>
+      <div id="hp-text">HP: 100/100</div>
+    </div>
+    <div id="game-over-screen" class="hidden">
+      <h1>遊戲結束</h1>
+      <p id="final-score"></p>
+      <p>按 R 重新開始</p>
+    </div>
+    <div id="controls-hint">WASD 移動　J 掌擊　K 氣功</div>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
