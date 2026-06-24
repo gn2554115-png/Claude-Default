@@ -2,6 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>素還真 - 布袋戲打鬥</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -20,6 +21,20 @@
     </div>
     <div id="controls-hint">WASD 移動　J 掌擊　K 氣功</div>
   </div>
+
+  <div id="touch-controls">
+    <div id="dpad">
+      <button class="dpad-btn dpad-up" data-key="w" aria-label="上">▲</button>
+      <button class="dpad-btn dpad-left" data-key="a" aria-label="左">◀</button>
+      <button class="dpad-btn dpad-down" data-key="s" aria-label="下">▼</button>
+      <button class="dpad-btn dpad-right" data-key="d" aria-label="右">▶</button>
+    </div>
+    <div id="action-buttons">
+      <button id="btn-palm" aria-label="掌擊">掌</button>
+      <button id="btn-qi" aria-label="氣功">氣</button>
+    </div>
+  </div>
+
   <script src="game.js"></script>
 </body>
 </html>

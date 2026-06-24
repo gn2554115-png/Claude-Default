@@ -4,11 +4,18 @@
   box-sizing: border-box;
 }
 
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  touch-action: none;
+  position: fixed;
+}
+
 body {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: 100vh;
   background: #111;
   font-family: "Microsoft JhengHei", "PingFang TC", sans-serif;
 }
@@ -17,6 +24,8 @@ body {
   position: relative;
   width: 800px;
   height: 500px;
+  transform-origin: center center;
+  flex-shrink: 0;
 }
 
 #gameCanvas {
@@ -100,4 +109,104 @@ body {
 
 #game-over-screen.hidden {
   display: none;
+}
+
+/* ===== 手機觸控控制 ===== */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  display: none;
+}
+
+@media (pointer: coarse) {
+  #touch-controls {
+    display: block;
+  }
+}
+
+#dpad {
+  position: fixed;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: 156px;
+  height: 156px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr;
+  pointer-events: auto;
+}
+
+.dpad-btn {
+  grid-column: 2;
+  grid-row: 2;
+  border: 1px solid rgba(61, 214, 255, 0.6);
+  border-radius: 10px;
+  background: rgba(10, 20, 30, 0.55);
+  color: #3ad6ff;
+  font-size: 18px;
+  box-shadow: 0 0 8px rgba(58, 214, 255, 0.5), inset 0 0 6px rgba(58, 214, 255, 0.25);
+  touch-action: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+
+.dpad-up { grid-column: 2; grid-row: 1; }
+.dpad-left { grid-column: 1; grid-row: 2; }
+.dpad-down { grid-column: 2; grid-row: 3; }
+.dpad-right { grid-column: 3; grid-row: 2; }
+
+.dpad-btn.pressed {
+  transform: scale(0.92);
+  box-shadow: 0 0 14px rgba(58, 214, 255, 0.9), inset 0 0 10px rgba(58, 214, 255, 0.5);
+}
+
+#action-buttons {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: row;
+  gap: 14px;
+  pointer-events: auto;
+}
+
+#action-buttons button {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  font-size: 20px;
+  font-weight: bold;
+  touch-action: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+
+#btn-palm {
+  border: 1px solid rgba(61, 214, 255, 0.7);
+  background: rgba(10, 20, 30, 0.55);
+  color: #3ad6ff;
+  box-shadow: 0 0 10px rgba(58, 214, 255, 0.6), inset 0 0 8px rgba(58, 214, 255, 0.3);
+}
+
+#btn-qi {
+  border: 1px solid rgba(255, 216, 77, 0.7);
+  background: rgba(30, 22, 5, 0.55);
+  color: #ffd84d;
+  box-shadow: 0 0 10px rgba(255, 216, 77, 0.6), inset 0 0 8px rgba(255, 216, 77, 0.3);
+}
+
+#action-buttons button.pressed {
+  transform: scale(0.92);
+}
+
+#btn-palm.pressed {
+  box-shadow: 0 0 18px rgba(58, 214, 255, 0.95), inset 0 0 12px rgba(58, 214, 255, 0.55);
+}
+
+#btn-qi.pressed {
+  box-shadow: 0 0 18px rgba(255, 216, 77, 0.95), inset 0 0 12px rgba(255, 216, 77, 0.55);
 }
