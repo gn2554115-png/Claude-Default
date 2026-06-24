@@ -25,7 +25,6 @@ const ENEMY_TOUCH_DAMAGE = 12;
 const KILL_SCORE = 10;
 
 const MAX_PARTICLES = 400;
-const STAR_COUNT = 80;
 
 // ===== 全域狀態 =====
 const state = {
@@ -53,10 +52,12 @@ function resetState() {
     hurtUntil: 0,
     palmCooldownUntil: 0,
     qiCooldownUntil: 0,
+    animTime: 0,
+    trailTimer: 0,
   };
   state.enemies = [];
   state.projectiles = [];
-  state.particles = state.particles.filter((pt) => pt.type === "star");
+  state.particles = [];
   state.score = 0;
   state.gameOver = false;
   state.lastEnemySpawnTime = performance.now();
@@ -99,27 +100,14 @@ function updateParticles(dt) {
   for (const pt of state.particles) {
     pt.x += pt.vx * dt;
     pt.y += pt.vy * dt;
-
-    if (pt.type === "star") {
-      if (pt.x < 0) pt.x += CANVAS_W;
-      if (pt.x > CANVAS_W) pt.x -= CANVAS_W;
-      if (pt.y < 0) pt.y += CANVAS_H;
-      if (pt.y > CANVAS_H) pt.y -= CANVAS_H;
-      continue;
-    }
-
     pt.life -= dt;
   }
 
-  state.particles = state.particles.filter(
-    (pt) => pt.type === "star" || pt.life > 0
-  );
+  state.particles = state.particles.filter((pt) => pt.life > 0);
 }
 
 function drawParticles() {
   for (const pt of state.particles) {
-    if (pt.type === "star") continue;
-
     const alpha = Math.max(0, pt.life / pt.maxLife);
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -190,21 +178,132 @@ function spawnExplosion(x, y, color, count = 14) {
   }
 }
 
-function initStars() {
-  for (let i = 0; i < STAR_COUNT; i++) {
-    state.particles.push({
-      x: Math.random() * CANVAS_W,
-      y: Math.random() * CANVAS_H,
-      vx: -5 - Math.random() * 10,
-      vy: 0,
-      life: Infinity,
-      maxLife: Infinity,
-      size: 0.5 + Math.random() * 1.5,
-      color: "#ffffff",
-      type: "star",
-      glow: false,
+function emitPlayerTrail(p, dt) {
+  p.trailTimer -= dt * 1000;
+  if (p.trailTimer > 0) return;
+  p.trailTimer = 80;
+
+  spawnParticle({
+    x: p.x - p.facing * 6,
+    y: p.y + p.h / 2 - 4,
+    vx: 0,
+    vy: 0,
+    life: 0.25,
+    maxLife: 0.25,
+    size: 4,
+    color: "rgba(58,214,255,0.5)",
+    type: "playerTrail",
+    glow: false,
+  });
+}
+
+function spawnPalmSlash(hitbox, facing) {
+  const baseAngle = facing > 0 ? 0 : Math.PI;
+  for (let i = 0; i < 7; i++) {
+    const angle = baseAngle + (Math.random() - 0.5) * 1.6;
+    const speed = 80 + Math.random() * 80;
+    spawnParticle({
+      x: hitbox.x,
+      y: hitbox.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 0.12,
+      maxLife: 0.12,
+      size: 3 + Math.random() * 2,
+      color: "rgba(120,230,255,0.95)",
+      type: "slash",
+      glow: true,
     });
   }
+}
+
+// ===== 音效系統 =====
+let audioCtx = null;
+
+function getAudioCtx() {
+  if (audioCtx) return audioCtx;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (err) {
+    audioCtx = null;
+  }
+  return audioCtx;
+}
+
+function unlockAudio() {
+  const ctx = getAudioCtx();
+  if (ctx && ctx.state === "suspended") ctx.resume();
+}
+
+function playTone({ freq, duration, type = "sine", peak = 0.2, freqEnd }) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, ctx.currentTime);
+  if (freqEnd) {
+    osc.frequency.linearRampToValueAtTime(freqEnd, ctx.currentTime + duration);
+  }
+
+  gain.gain.setValueAtTime(peak, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + duration);
+}
+
+function playNoiseBurst({ duration, peak = 0.3 }) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+
+  const frameCount = Math.max(1, Math.floor(ctx.sampleRate * duration));
+  const buffer = ctx.createBuffer(1, frameCount, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < frameCount; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(peak, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+
+  noise.connect(gain);
+  gain.connect(ctx.destination);
+  noise.start();
+  noise.stop(ctx.currentTime + duration);
+}
+
+function playPalmSound() {
+  playNoiseBurst({ duration: 0.08, peak: 0.3 });
+}
+
+function playQiFireSound() {
+  playTone({ freq: 600, freqEnd: 1200, duration: 0.18, type: "sawtooth", peak: 0.15 });
+}
+
+function playHitSound() {
+  playTone({ freq: 320, duration: 0.1, type: "square", peak: 0.15 });
+}
+
+function playKillSound() {
+  playTone({ freq: 500, freqEnd: 120, duration: 0.22, type: "sawtooth", peak: 0.18 });
+}
+
+function playHurtSound() {
+  playNoiseBurst({ duration: 0.15, peak: 0.35 });
+}
+
+function playGameOverSound() {
+  const notes = [440, 330, 220];
+  notes.forEach((freq, i) => {
+    setTimeout(() => playTone({ freq, duration: 0.3, type: "triangle", peak: 0.2 }), i * 180);
+  });
 }
 
 // ===== 輸入處理 =====
@@ -236,7 +335,9 @@ function updatePlayer(dt) {
   if (state.keys.has("a")) dx -= 1;
   if (state.keys.has("d")) dx += 1;
 
-  if (dx !== 0 || dy !== 0) {
+  const moving = dx !== 0 || dy !== 0;
+
+  if (moving) {
     const len = Math.sqrt(dx * dx + dy * dy);
     dx /= len;
     dy /= len;
@@ -249,6 +350,10 @@ function updatePlayer(dt) {
 
   p.x = clamp(p.x, p.radius, CANVAS_W - p.radius);
   p.y = clamp(p.y, p.radius, CANVAS_H - p.radius);
+
+  p.animTime += dt;
+  p.moving = moving;
+  if (moving) emitPlayerTrail(p, dt);
 }
 
 function tryPalmAttack() {
@@ -263,9 +368,13 @@ function tryPalmAttack() {
     radius: PALM_RANGE / 2,
   };
 
+  spawnPalmSlash(hitbox, p.facing);
+  playPalmSound();
+
   for (const enemy of state.enemies) {
     if (circleHit(hitbox, enemy)) {
       applyDamage(enemy, PALM_DAMAGE);
+      playHitSound();
     }
   }
 }
@@ -275,6 +384,7 @@ function tryQiAttack() {
   const now = performance.now();
   if (now < p.qiCooldownUntil) return;
   p.qiCooldownUntil = now + QI_COOLDOWN;
+  playQiFireSound();
 
   state.projectiles.push({
     x: p.x + p.facing * (p.w / 2),
@@ -326,6 +436,7 @@ function updateEnemies(dt) {
     if (e.hp <= 0) {
       state.score += KILL_SCORE;
       spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)");
+      playKillSound();
       return false;
     }
     return true;
@@ -335,6 +446,7 @@ function updateEnemies(dt) {
   state.enemies = state.enemies.filter((e) => {
     if (circleHit(p, e)) {
       applyDamage(p, ENEMY_TOUCH_DAMAGE);
+      playHurtSound();
       return false;
     }
     return true;
@@ -354,6 +466,7 @@ function updateProjectiles(dt) {
       if (!proj.hit && circleHit(proj, enemy)) {
         applyDamage(enemy, proj.damage);
         spawnExplosion(proj.x, proj.y, "rgba(255,216,77,0.9)", 10);
+        playHitSound();
         proj.hit = true;
       }
     }
@@ -374,6 +487,7 @@ function triggerGameOver() {
   state.gameOver = true;
   document.getElementById("final-score").textContent = `最終分數: ${state.score}`;
   document.getElementById("game-over-screen").classList.remove("hidden");
+  playGameOverSound();
 }
 
 function resetAndStart() {
@@ -401,11 +515,16 @@ const ctx = canvas.getContext("2d");
 function drawPlayer() {
   const p = state.player;
   const hurt = isHurt(p);
+  const wobbleFreq = p.moving ? 10 : 3;
+  const wobbleAmp = p.moving ? 2 : 1;
+  const bob = Math.sin(p.animTime * wobbleFreq) * wobbleAmp;
+  const swayL = Math.sin(p.animTime * wobbleFreq) * 3;
+  const swayR = Math.sin(p.animTime * wobbleFreq + Math.PI) * 3;
 
   ctx.save();
-  ctx.translate(p.x, p.y);
+  ctx.translate(p.x, p.y + bob);
 
-  // 身體（長袍）— 霓虹漸層
+  // 身體（長袍）— 霓虹漸層，下緣依走動擺動
   const robeTop = hurt ? "#ff5555" : "#3ad6ff";
   const robeBottom = hurt ? "#660000" : "#0a1a33";
   const robeGrad = ctx.createLinearGradient(0, -p.h / 2 + 12, 0, p.h / 2);
@@ -414,7 +533,18 @@ function drawPlayer() {
   ctx.fillStyle = robeGrad;
   ctx.shadowColor = hurt ? "#ff3333" : "#3ad6ff";
   ctx.shadowBlur = 16;
-  ctx.fillRect(-p.w / 2, -p.h / 2 + 12, p.w, p.h - 12);
+  ctx.beginPath();
+  ctx.moveTo(-p.w / 2, -p.h / 2 + 12);
+  ctx.lineTo(p.w / 2, -p.h / 2 + 12);
+  ctx.lineTo(p.w / 2 + swayR, p.h / 2);
+  ctx.lineTo(-p.w / 2 + swayL, p.h / 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // 腰帶（金色點綴，打破單色長袍的單調感）
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#ffd84d";
+  ctx.fillRect(-p.w / 2, -p.h / 2 + 22, p.w, 4);
 
   // 頭部 — 發光核心球體
   const coreGrad = ctx.createRadialGradient(0, -p.h / 2 + 9, 1, 0, -p.h / 2 + 9, 12);
@@ -494,23 +624,62 @@ function drawProjectile(proj) {
   ctx.restore();
 }
 
-function drawBackground() {
-  const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
-  grad.addColorStop(0, "#0a0a1f");
-  grad.addColorStop(1, "#1a0a2a");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+const HORIZON_Y = CANVAS_H * 0.65;
 
-  ctx.save();
-  ctx.globalAlpha = 0.6;
-  ctx.fillStyle = "#ffffff";
-  for (const pt of state.particles) {
-    if (pt.type !== "star") continue;
+const FAR_MOUNTAINS = [
+  { baseX: 60, width: 220, height: 70 },
+  { baseX: 280, width: 260, height: 95 },
+  { baseX: 520, width: 240, height: 75 },
+  { baseX: 720, width: 200, height: 60 },
+];
+
+const GRASS_TUFTS = Array.from({ length: 18 }, (_, i) => ({
+  x: (i * 47 + 20) % CANVAS_W,
+  y: HORIZON_Y + 12 + ((i * 31) % (CANVAS_H - HORIZON_Y - 20)),
+  size: 6 + (i % 3) * 2,
+}));
+
+function drawBackground() {
+  // 黃昏天空
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
+  skyGrad.addColorStop(0, "#3a2a4a");
+  skyGrad.addColorStop(0.55, "#7a4a5a");
+  skyGrad.addColorStop(1, "#c98a5a");
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, CANVAS_W, HORIZON_Y);
+
+  // 遠山輪廓
+  ctx.fillStyle = "rgba(50,30,60,0.6)";
+  for (const m of FAR_MOUNTAINS) {
     ctx.beginPath();
-    ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+    ctx.moveTo(m.baseX - m.width / 2, HORIZON_Y);
+    ctx.lineTo(m.baseX, HORIZON_Y - m.height);
+    ctx.lineTo(m.baseX + m.width / 2, HORIZON_Y);
+    ctx.closePath();
     ctx.fill();
   }
-  ctx.restore();
+
+  // 地面
+  const groundGrad = ctx.createLinearGradient(0, HORIZON_Y, 0, CANVAS_H);
+  groundGrad.addColorStop(0, "#3a3320");
+  groundGrad.addColorStop(1, "#1c1810");
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, HORIZON_Y, CANVAS_W, CANVAS_H - HORIZON_Y);
+
+  // 地平線亮邊
+  ctx.fillStyle = "rgba(255,200,140,0.4)";
+  ctx.fillRect(0, HORIZON_Y, CANVAS_W, 2);
+
+  // 草叢
+  ctx.fillStyle = "#3f5a2a";
+  for (const tuft of GRASS_TUFTS) {
+    ctx.beginPath();
+    ctx.moveTo(tuft.x - tuft.size, tuft.y);
+    ctx.lineTo(tuft.x, tuft.y - tuft.size * 1.6);
+    ctx.lineTo(tuft.x + tuft.size, tuft.y);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 function render() {
@@ -540,6 +709,11 @@ function bindDpadButton(btn) {
     e.preventDefault();
     state.keys.add(key);
     btn.classList.add("pressed");
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // ignore unsupported environments
+    }
   };
   const release = (e) => {
     e.preventDefault();
@@ -556,6 +730,11 @@ function bindActionButton(btn, triggerFn) {
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     btn.classList.add("pressed");
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch (err) {
+      // ignore unsupported environments
+    }
     if (state.gameOver) {
       resetAndStart();
     } else {
@@ -602,7 +781,6 @@ function gameLoop(timestamp) {
 }
 
 // ===== 啟動 =====
-initStars();
 resetState();
 lastTime = performance.now();
 requestAnimationFrame(gameLoop);
@@ -616,3 +794,6 @@ window.addEventListener("orientationchange", () => {
 document.querySelectorAll(".dpad-btn").forEach(bindDpadButton);
 bindActionButton(document.getElementById("btn-palm"), tryPalmAttack);
 bindActionButton(document.getElementById("btn-qi"), tryQiAttack);
+
+window.addEventListener("keydown", unlockAudio, { once: true });
+document.addEventListener("pointerdown", unlockAudio, { once: true });
