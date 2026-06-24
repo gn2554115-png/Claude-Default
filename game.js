@@ -52,18 +52,26 @@ const ENEMY_BRUTE_TOUCH_MULT = 1.6;
 const ENEMY_BRUTE_SCORE_MULT = 2;
 
 // 關卡制難度：每 STAGE_DURATION_SEC 秒跳一級，離散調整而非連續內插
+// 數值曲線改為平滑指數遞增（相鄰關卡跳幅 ~15-22%），避免單一關卡轉換疊加過多難度因子
 const STAGE_DURATION_SEC = 45;
 const MIN_SPAWN_INTERVAL_MS = 220;
 const STAGE_CONFIGS = [
-  { spawnInterval: 1400, hpMult: 1.0, bruteChance: 0.0, skyTint: "#3a2a4a" },
-  { spawnInterval: 1100, hpMult: 1.15, bruteChance: 0.15, skyTint: "#4a2a3a" },
-  { spawnInterval: 850, hpMult: 1.35, bruteChance: 0.22, skyTint: "#2a2a4a" },
-  { spawnInterval: 650, hpMult: 1.55, bruteChance: 0.3, skyTint: "#1a1a3a" },
-  { spawnInterval: 450, hpMult: 1.8, bruteChance: 0.35, skyTint: "#0a0a2a" },
-  { spawnInterval: 380, hpMult: 2.1, bruteChance: 0.4, skyTint: "#1a0a2a" },
-  { spawnInterval: 320, hpMult: 2.45, bruteChance: 0.45, skyTint: "#15001a" },
-  { spawnInterval: 260, hpMult: 2.85, bruteChance: 0.5, skyTint: "#0a0010" },
+  { spawnInterval: 1400, hpMult: 1.0, bruteChance: 0.0 },
+  { spawnInterval: 1100, hpMult: 1.16, bruteChance: 0.1 },
+  { spawnInterval: 865, hpMult: 1.35, bruteChance: 0.18 },
+  { spawnInterval: 680, hpMult: 1.56, bruteChance: 0.25 },
+  { spawnInterval: 534, hpMult: 1.81, bruteChance: 0.32 },
+  { spawnInterval: 420, hpMult: 2.1, bruteChance: 0.38 },
+  { spawnInterval: 330, hpMult: 2.44, bruteChance: 0.44 },
+  { spawnInterval: 260, hpMult: 2.83, bruteChance: 0.5 },
 ];
+
+// 新怪種剛登場時的緩衝（只套用在 volley 身上，避免遠程攻擊一登場就太密集）
+const TYPE_FIRST_STAGE = { drifter: 0, skitter: 1, lurker: 2, volley: 3, juggernaut: 4 };
+const VOLLEY_INTRO_BUFFER = [1.6, 1.3]; // 登場後頭 2 關的射擊間隔倍率，之後恢復 1x
+
+// 新怪種登場與 boss 生成解耦：該次 stage 轉換若引入新怪種池，延後 boss 生成，讓玩家先適應新怪
+const BOSS_INTRO_DELAY_SEC = 12;
 
 // 小怪種類定義：每關場上同時最多 2 種一般小怪（boss／悍敵不計入此上限）
 const ENEMY_TYPE_DEFS = {
@@ -77,6 +85,7 @@ const ENEMY_TYPE_DEFS = {
     behavior: "ambush",
     triggerRadius: 140,
     dashSpeedMult: 2.4,
+    warningSec: 0.45,
   },
   volley: {
     hpMult: 0.8,
@@ -142,20 +151,22 @@ const CURRENCY_BRUTE_DROP_MULT = 3;
 const CURRENCY_ATTRACT_RADIUS = 36;
 const CURRENCY_ATTRACT_SPEED = 260;
 const CURRENCY_PICKUP_RADIUS = 16;
-const DROP_LIFETIME_SEC = 12;
+const VACUUM_PULSE_MS = 1200; // 升級時的一次性大範圍吸附，方便撿拾遠處的永久掉落物
+const VACUUM_PULSE_RADIUS = 4000;
 
 // 掌技／氣彈隨玩家等級成長（J/K 維持手動操作，但傷害不再寫死）
 const PALM_GROWTH_RATE = 0.08;
 const QI_GROWTH_RATE = 0.08;
 
 // 技能表（被動）：環身罡氣／破空擲／引氣術／既有自動攻擊
-const SKILL_BASE_COST = { orbit: 15, throw: 18, magnet: 12 };
+const SKILL_BASE_COST = { orbit: 15, throw: 18, magnet: 12, dash: 14, barrier: 20, vampire: 16, frenzy: 18 };
 const SKILL_COST_GROWTH = 1.6;
 const ORBIT_BASE_COUNT = 2;
 const ORBIT_BASE_DAMAGE = 10;
 const ORBIT_RADIUS = 70;
 const ORBIT_BLADE_RADIUS = 11;
 const ORBIT_SPIN = 2.2; // rad/秒
+const ORBIT_SPIN_GROWTH = 0.35; // 滿級（5）≈2.75倍轉速
 const ORBIT_HIT_COOLDOWN_MS = 500;
 const THROW_BASE_DAMAGE = 16;
 const THROW_BASE_INTERVAL_MS = 2200;
@@ -164,20 +175,43 @@ const THROW_TURN_RATE = 5;
 const THROW_RADIUS = 8;
 const THROW_BASE_PIERCE = 1;
 
+const DASH_DODGE_PER_LEVEL = 0.04; // 與「幻影步」卡片共用 p.dodgeChance，頂部 clamp 35%
+const BARRIER_INTERVAL_BASE_SEC = 18;
+const BARRIER_INTERVAL_PER_LEVEL_SEC = 4; // 等級越高，護盾重新充能越快
+const BARRIER_RING_RADIUS = 46;
+const VAMPIRE_CHANCE_PER_LEVEL = 0.03;
+const VAMPIRE_HEAL_AMOUNT = 1;
+const FRENZY_HP_THRESHOLD = 0.3;
+const FRENZY_DMG_PER_LEVEL = 0.15;
+
+// 技能上限與可購買性：homing 永遠釘選顯示、不可購買（透過一般升級卡強化）
 const SKILL_DEFS = [
-  { id: "homing", name: "鏢氣連射", baseDesc: "自動鎖定最近敵人發射氣彈（既有自動攻擊，透過一般升級卡強化）" },
-  { id: "orbit", name: "環身罡氣", baseDesc: "環繞身周持續傷害周圍敵人" },
-  { id: "throw", name: "破空擲", baseDesc: "定時擲出貫穿武器擊中最近敵人" },
-  { id: "magnet", name: "引氣術", baseDesc: "擴大內力珠的吸引範圍" },
+  { id: "homing", name: "鏢氣連射", baseDesc: "自動鎖定最近敵人發射氣彈（既有自動攻擊，透過一般升級卡強化）", purchasable: false, maxLevel: 0 },
+  { id: "orbit", name: "環身罡氣", baseDesc: "環繞身周持續傷害周圍敵人，等級越高轉速越快", purchasable: true, maxLevel: 5 },
+  { id: "throw", name: "破空擲", baseDesc: "定時擲出貫穿武器擊中最近敵人", purchasable: true, maxLevel: 4 },
+  { id: "magnet", name: "引氣術", baseDesc: "擴大內力珠的吸引範圍", purchasable: true, maxLevel: 4 },
+  { id: "dash", name: "奇門步", baseDesc: "被動提升閃避機率", purchasable: true, maxLevel: 3 },
+  { id: "barrier", name: "護體罡氣", baseDesc: "定時獲得一層護盾，吸收一次傷害", purchasable: true, maxLevel: 3 },
+  { id: "vampire", name: "吸血掌", baseDesc: "擊殺敵人時有機率回復氣血", purchasable: true, maxLevel: 3 },
+  { id: "frenzy", name: "狂狼之力", baseDesc: "氣血低於30%時大幅提升傷害", purchasable: true, maxLevel: 3 },
 ];
 
-function skillScale(level) {
-  return 1 + level * 0.22 + level * level * 0.01;
+// 每技能 base/perLevel 線性係數，取代統一的 skillScale；未列出者用預設值
+const SKILL_TUNING = {
+  orbit: { perLevel: 0.36 }, // 滿級（5）≈2.8x 傷害
+  throw: { perLevel: 0.4125 }, // 滿級（4）≈2.65x 傷害
+};
+
+function skillMult(skillId, level) {
+  const tuning = SKILL_TUNING[skillId];
+  const perLevel = tuning ? tuning.perLevel : 0.22;
+  return 1 + level * perLevel;
 }
 
 const XP_BASE_TO_NEXT = 20;
 const XP_GROWTH = 1.35;
 const KILL_XP = 8;
+const LEVEL_UP_HP_BONUS = 5;
 
 const MAX_PARTICLES = 400;
 
@@ -189,9 +223,9 @@ const CHARACTERS = [
     rimColor: "#3ad6ff",
     bodyColor: "#11131c",
     beltColor: "#ffd84d",
-    desc: "掌震波 AoE　震退四周敵人",
+    desc: "掌心劈砍擴散　斬擊四周敵人",
     palmAbility: "nova",
-    palmName: "霸王肘",
+    palmName: "霸王斬",
   },
   {
     id: "yexuan",
@@ -274,6 +308,14 @@ const UPGRADE_POOL = [
       p.pierceCount = (p.pierceCount || 0) + 1;
     },
   },
+  {
+    id: "dodge",
+    name: "幻影步",
+    stat: "閃避 +5%",
+    apply(p) {
+      p.dodgeChance = Math.min(0.35, p.dodgeChance + 0.05);
+    },
+  },
 ];
 
 // ===== 全域狀態 =====
@@ -307,6 +349,10 @@ const state = {
   bossActive: false,
   bossCyclesSpawned: 0,
   bossRepeatTimer: 0,
+  bossSpawnAt: 0,
+  skillShopOffers: [],
+  skillRerollCount: 0,
+  camera: { x: 0, y: 0 },
 };
 
 function resetState(characterId) {
@@ -352,11 +398,19 @@ function resetState(characterId) {
     currency: 0,
     orbitAngle: 0,
     throwTimer: THROW_BASE_INTERVAL_MS,
+    vacuumPulseUntil: 0,
+    dodgeChance: 0,
+    barrierCharge: false,
+    barrierTimer: BARRIER_INTERVAL_BASE_SEC,
     skills: {
       homing: { unlocked: true, level: 1 },
       orbit: { unlocked: false, level: 0 },
       throw: { unlocked: false, level: 0 },
       magnet: { unlocked: false, level: 0 },
+      dash: { unlocked: false, level: 0 },
+      barrier: { unlocked: false, level: 0 },
+      vampire: { unlocked: false, level: 0 },
+      frenzy: { unlocked: false, level: 0 },
     },
   };
   state.enemies = [];
@@ -389,12 +443,18 @@ function resetState(characterId) {
   state.bossActive = false;
   state.bossCyclesSpawned = 0;
   state.bossRepeatTimer = 0;
+  state.bossSpawnAt = 0;
+  state.skillShopOffers = [];
+  state.skillRerollCount = 0;
+  state.camera.x = state.player.x - CANVAS_W / 2;
+  state.camera.y = state.player.y - CANVAS_H / 2;
 
   setBgmVolume(BGM_NORMAL_VOLUME);
   document.getElementById("game-over-screen").classList.add("hidden");
   const cardBox = document.getElementById("level-up-cards");
   cardBox.innerHTML = "";
   cardBox.classList.add("hidden");
+  document.getElementById("level-up-backdrop").classList.add("hidden");
   const skillMenu = document.getElementById("skill-menu");
   if (skillMenu) skillMenu.classList.add("hidden");
   updateUI();
@@ -427,9 +487,36 @@ function circleHit(a, b) {
   return distance(a, b) < a.radius + b.radius;
 }
 
+// 唯一的傷害入口：回傳是否真的扣血（false 代表閃避或被護盾吸收），呼叫端依此決定是否觸發受傷反饋
 function applyDamage(entity, dmg) {
+  if (entity === state.player && Math.random() < entity.dodgeChance) {
+    spawnPickupText(entity.x, entity.y - entity.radius - 6, "閃避!", true);
+    return false;
+  }
+  if (entity === state.player && tryAbsorbWithBarrier(entity)) {
+    spawnPickupText(entity.x, entity.y - entity.radius - 6, "格擋!", true);
+    return false;
+  }
   entity.hp -= dmg;
   entity.hurtUntil = performance.now() + HURT_EFFECT_DURATION;
+  return true;
+}
+
+// 護體罡氣：消耗一層護盾吸收本次傷害，並重置充能倒數
+function tryAbsorbWithBarrier(entity) {
+  if (!entity.barrierCharge) return false;
+  entity.barrierCharge = false;
+  entity.barrierTimer = getSkillEffect("barrier", "interval");
+  spawnShockwave(entity.x, entity.y, BARRIER_RING_RADIUS);
+  return true;
+}
+
+function updateBarrier(dt) {
+  const p = state.player;
+  const skill = p.skills.barrier;
+  if (!skill.unlocked || skill.level <= 0 || p.barrierCharge) return;
+  p.barrierTimer -= dt;
+  if (p.barrierTimer <= 0) p.barrierCharge = true;
 }
 
 function isHurt(entity) {
@@ -604,16 +691,16 @@ function rollCurrencyDrop(e) {
 }
 
 function spawnCurrencyDrop(x, y, amount) {
-  state.drops.push({ x, y, amount, life: DROP_LIFETIME_SEC, bobPhase: Math.random() * Math.PI * 2 });
+  state.drops.push({ x, y, amount, bobPhase: Math.random() * Math.PI * 2 });
 }
 
 function updateDrops(dt) {
   const p = state.player;
   const magnetMult = p.skills.magnet.unlocked ? getSkillEffect("magnet", "radiusMult") : 1;
-  const attractRadius = CURRENCY_ATTRACT_RADIUS * magnetMult;
+  const pulsing = performance.now() < p.vacuumPulseUntil;
+  const attractRadius = pulsing ? VACUUM_PULSE_RADIUS : CURRENCY_ATTRACT_RADIUS * magnetMult;
 
   for (const drop of state.drops) {
-    drop.life -= dt;
     drop.bobPhase += dt * 4;
     const dx = p.x - drop.x;
     const dy = p.y - drop.y;
@@ -624,6 +711,7 @@ function updateDrops(dt) {
     }
   }
 
+  // 掉落物永不過期，只有走過去拾取才會消失
   state.drops = state.drops.filter((drop) => {
     const dist = distance(p, drop);
     if (dist < CURRENCY_PICKUP_RADIUS + p.radius) {
@@ -632,7 +720,7 @@ function updateDrops(dt) {
       playPickupSound();
       return false;
     }
-    return drop.life > 0;
+    return true;
   });
 }
 
@@ -655,8 +743,8 @@ function drawDrops() {
   }
 }
 
-function spawnPickupText(x, y, amount) {
-  state.pickupTexts.push({ x, y: y - 14, amount, life: 0.5, maxLife: 0.5, vy: -36 });
+function spawnPickupText(x, y, amount, isLabel) {
+  state.pickupTexts.push({ x, y: y - 14, amount, isLabel: !!isLabel, life: 0.5, maxLife: 0.5, vy: -36 });
 }
 
 function updatePickupTexts(dt) {
@@ -674,10 +762,10 @@ function drawPickupTexts() {
   for (const t of state.pickupTexts) {
     const alpha = Math.max(0, t.life / t.maxLife);
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = "#ffe48a";
+    ctx.fillStyle = t.isLabel ? "#7adfff" : "#ffe48a";
     ctx.shadowColor = "#000";
     ctx.shadowBlur = 4;
-    ctx.fillText(`+${t.amount}`, t.x, t.y);
+    ctx.fillText(t.isLabel ? t.amount : `+${t.amount}`, t.x, t.y);
   }
   ctx.restore();
 }
@@ -714,6 +802,25 @@ function spawnShockwave(x, y, maxRadius) {
   state.shockwaves.push({ x, y, radius: 10, maxRadius, life: 0.4, maxLife: 0.4 });
 }
 
+const SLASH_ARC_COUNT = 6;
+const SLASH_ARC_SPAN = 0.9; // 弧長（弧度）
+
+function spawnSlashArcs(x, y, maxRadius) {
+  for (let i = 0; i < SLASH_ARC_COUNT; i++) {
+    const baseAngle = (Math.PI * 2 * i) / SLASH_ARC_COUNT;
+    state.shockwaves.push({
+      x,
+      y,
+      radius: 10,
+      maxRadius,
+      life: 0.4,
+      maxLife: 0.4,
+      isSlash: true,
+      baseAngle,
+    });
+  }
+}
+
 function updateShockwaves(dt) {
   for (const s of state.shockwaves) {
     s.life -= dt;
@@ -733,7 +840,11 @@ function drawShockwaves() {
     ctx.shadowBlur = 20;
     ctx.lineWidth = 6;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+    if (s.isSlash) {
+      ctx.arc(s.x, s.y, s.radius, s.baseAngle - SLASH_ARC_SPAN / 2, s.baseAngle + SLASH_ARC_SPAN / 2);
+    } else {
+      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+    }
     ctx.stroke();
     ctx.restore();
   }
@@ -762,9 +873,19 @@ function unlockAudio() {
 const BGM_NORMAL_VOLUME = 0.07;
 const BGM_GAMEOVER_VOLUME = 0.025;
 const BGM_TEMPO = 96; // BPM
-const BGM_STEP_SEC = 60 / BGM_TEMPO / 2; // 八分音符
+const BGM_TEMPO_BOSS = 116; // BPM，boss 戰更緊湊
 const BGM_SCALE = [196.0, 220.0, 246.94, 293.66, 329.63]; // G 五聲音階
 const BGM_PATTERN = [0, 2, 1, 3, 2, 4, 3, 1];
+const BGM_PATTERN_BOSS = [4, 3, 4, 1, 3, 0, 3, 2, 4, 2, 1, 3]; // boss 戰更密集緊張的音型
+
+function getBgmStepSec() {
+  const tempo = state.bossActive ? BGM_TEMPO_BOSS : BGM_TEMPO;
+  return 60 / tempo / 2; // 八分音符
+}
+
+function getBgmPattern() {
+  return state.bossActive ? BGM_PATTERN_BOSS : BGM_PATTERN;
+}
 
 let bgmGain = null;
 let bgmNextStepTime = 0;
@@ -795,6 +916,9 @@ function scheduleBgmStep(time) {
   const gain = ensureBgmGain();
   if (!ctx || !gain) return;
 
+  const stepSec = getBgmStepSec();
+  const pattern = getBgmPattern();
+
   if (bgmStepIndex % 4 === 0) {
     const drone = ctx.createOscillator();
     const droneGain = ctx.createGain();
@@ -802,14 +926,14 @@ function scheduleBgmStep(time) {
     drone.frequency.value = BGM_SCALE[0] / 2;
     droneGain.gain.setValueAtTime(0.001, time);
     droneGain.gain.linearRampToValueAtTime(0.5, time + 0.3);
-    droneGain.gain.exponentialRampToValueAtTime(0.001, time + BGM_STEP_SEC * 4);
+    droneGain.gain.exponentialRampToValueAtTime(0.001, time + stepSec * 4);
     drone.connect(droneGain);
     droneGain.connect(gain);
     drone.start(time);
-    drone.stop(time + BGM_STEP_SEC * 4 + 0.05);
+    drone.stop(time + stepSec * 4 + 0.05);
   }
 
-  const note = BGM_PATTERN[bgmStepIndex % BGM_PATTERN.length];
+  const note = pattern[bgmStepIndex % pattern.length];
   const freq = BGM_SCALE[note];
   const osc = ctx.createOscillator();
   const oscGain = ctx.createGain();
@@ -817,21 +941,22 @@ function scheduleBgmStep(time) {
   osc.frequency.value = freq;
   oscGain.gain.setValueAtTime(0.001, time);
   oscGain.gain.linearRampToValueAtTime(0.4, time + 0.02);
-  oscGain.gain.exponentialRampToValueAtTime(0.001, time + BGM_STEP_SEC * 0.9);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, time + stepSec * 0.9);
   osc.connect(oscGain);
   oscGain.connect(gain);
   osc.start(time);
-  osc.stop(time + BGM_STEP_SEC);
+  osc.stop(time + stepSec);
 
   bgmStepIndex += 1;
+  return stepSec;
 }
 
 function bgmSchedulerTick() {
   const ctx = getAudioCtx();
   if (!ctx || !bgmStarted) return;
   while (bgmNextStepTime < ctx.currentTime + 0.15) {
-    scheduleBgmStep(bgmNextStepTime);
-    bgmNextStepTime += BGM_STEP_SEC;
+    const stepSec = scheduleBgmStep(bgmNextStepTime);
+    bgmNextStepTime += stepSec;
   }
 }
 
@@ -970,6 +1095,9 @@ function addXp(amount) {
     p.xp -= p.xpToNext;
     p.level += 1;
     p.xpToNext = Math.round(XP_BASE_TO_NEXT * Math.pow(XP_GROWTH, p.level - 1));
+    p.maxHp += LEVEL_UP_HP_BONUS;
+    p.hp = Math.min(p.maxHp, p.hp + LEVEL_UP_HP_BONUS);
+    p.vacuumPulseUntil = performance.now() + VACUUM_PULSE_MS;
     state.pendingLevelUps += 1;
     playLevelUpSound();
   }
@@ -1006,6 +1134,7 @@ function renderUpgradeCards() {
     container.appendChild(card);
   });
   container.classList.remove("hidden");
+  document.getElementById("level-up-backdrop").classList.remove("hidden");
 }
 
 function selectUpgrade(i) {
@@ -1016,6 +1145,7 @@ function selectUpgrade(i) {
   const container = document.getElementById("level-up-cards");
   container.innerHTML = "";
   container.classList.add("hidden");
+  document.getElementById("level-up-backdrop").classList.add("hidden");
 }
 
 // ===== 技能表（可暫停，花費怪物掉落物升級被動技能） =====
@@ -1024,14 +1154,18 @@ function getSkillEffect(skillId, field) {
   const level = skill ? skill.level : 0;
   if (skillId === "orbit") {
     if (field === "count") return ORBIT_BASE_COUNT + Math.floor(level / 2);
-    if (field === "damage") return Math.round(ORBIT_BASE_DAMAGE * skillScale(level));
+    if (field === "damage") return Math.round(ORBIT_BASE_DAMAGE * skillMult("orbit", level));
+    if (field === "spin") return ORBIT_SPIN * (1 + level * ORBIT_SPIN_GROWTH);
   }
   if (skillId === "throw") {
-    if (field === "damage") return Math.round(THROW_BASE_DAMAGE * skillScale(level));
-    if (field === "interval") return Math.max(400, Math.round(THROW_BASE_INTERVAL_MS / skillScale(level)));
+    if (field === "damage") return Math.round(THROW_BASE_DAMAGE * skillMult("throw", level));
+    if (field === "interval") return Math.max(400, Math.round(THROW_BASE_INTERVAL_MS / skillMult("throw", level)));
   }
   if (skillId === "magnet") {
     if (field === "radiusMult") return 1 + level * 0.8;
+  }
+  if (skillId === "barrier") {
+    if (field === "interval") return Math.max(6, BARRIER_INTERVAL_BASE_SEC - level * BARRIER_INTERVAL_PER_LEVEL_SEC);
   }
   return 0;
 }
@@ -1041,17 +1175,51 @@ function getSkillUpgradeCost(skillId, level) {
   return Math.round(base * Math.pow(SKILL_COST_GROWTH, level));
 }
 
+function getSkillDef(skillId) {
+  return SKILL_DEFS.find((d) => d.id === skillId);
+}
+
 function trySkillUpgrade(skillId) {
   const skill = state.player.skills[skillId];
-  if (!skill || skillId === "homing") return;
+  const def = getSkillDef(skillId);
+  if (!skill || !def || !def.purchasable) return;
+  if (skill.level >= def.maxLevel) return;
   const cost = getSkillUpgradeCost(skillId, skill.level);
   if (state.player.currency < cost) return;
-  state.player.currency -= cost;
+  const p = state.player;
+  p.currency -= cost;
   skill.level += 1;
   skill.unlocked = true;
+  if (skillId === "dash") {
+    p.dodgeChance = Math.min(0.35, p.dodgeChance + DASH_DODGE_PER_LEVEL);
+  }
+  if (skillId === "barrier") {
+    p.barrierTimer = getSkillEffect("barrier", "interval");
+  }
   playLevelUpSound();
   renderSkillMenu();
   updateUI();
+}
+
+// 隨機顯示一批（4個）可購買技能；已滿級者排除，不足4個則退回全池
+function rollSkillShopOffers() {
+  let pool = SKILL_DEFS.filter((d) => d.purchasable && state.player.skills[d.id].level < d.maxLevel);
+  if (pool.length < 4) pool = SKILL_DEFS.filter((d) => d.purchasable);
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  state.skillShopOffers = shuffled.slice(0, 4).map((d) => d.id);
+}
+
+function getSkillRerollCost() {
+  return Math.round(20 * Math.pow(1.5, state.skillRerollCount));
+}
+
+function trySkillReroll() {
+  const cost = getSkillRerollCost();
+  if (state.player.currency < cost) return;
+  state.player.currency -= cost;
+  state.skillRerollCount += 1;
+  rollSkillShopOffers();
+  renderSkillMenu();
 }
 
 function toggleSkillMenu() {
@@ -1059,6 +1227,7 @@ function toggleSkillMenu() {
   state.skillMenuOpen = !state.skillMenuOpen;
   const menu = document.getElementById("skill-menu");
   if (state.skillMenuOpen) {
+    if (state.skillShopOffers.length === 0) rollSkillShopOffers();
     renderSkillMenu();
     menu.classList.remove("hidden");
   } else {
@@ -1066,29 +1235,48 @@ function toggleSkillMenu() {
   }
 }
 
+function buildSkillRow(def) {
+  const skill = state.player.skills[def.id];
+  const row = document.createElement("div");
+  row.className = "skill-row";
+  if (!def.purchasable) {
+    row.innerHTML = `<span class="skill-name">${def.name}</span><span class="skill-desc">${def.baseDesc}</span>`;
+    return row;
+  }
+  const maxed = skill.level >= def.maxLevel;
+  const lvlText = skill.unlocked ? `Lv.${skill.level}/${def.maxLevel}` : `未習得 (上限 Lv.${def.maxLevel})`;
+  if (maxed) {
+    row.innerHTML = `<span class="skill-name">${def.name} <span class="skill-level">${lvlText}</span></span><span class="skill-desc">${def.baseDesc}</span><span class="skill-maxed-badge">已滿級</span>`;
+  } else {
+    const cost = getSkillUpgradeCost(def.id, skill.level);
+    row.innerHTML = `<span class="skill-name">${def.name} <span class="skill-level">${lvlText}</span></span><span class="skill-desc">${def.baseDesc}</span><button class="skill-buy-btn">花費 ${cost}</button>`;
+    const btn = row.querySelector(".skill-buy-btn");
+    btn.disabled = state.player.currency < cost;
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      trySkillUpgrade(def.id);
+    });
+  }
+  return row;
+}
+
 function renderSkillMenu() {
   document.getElementById("skill-menu-currency").textContent = `內力珠: ${state.player.currency}`;
   const list = document.getElementById("skill-menu-list");
   list.innerHTML = "";
-  SKILL_DEFS.forEach((def) => {
-    const skill = state.player.skills[def.id];
-    const row = document.createElement("div");
-    row.className = "skill-row";
-    if (def.id === "homing") {
-      row.innerHTML = `<span class="skill-name">${def.name}</span><span class="skill-desc">${def.baseDesc}</span>`;
-    } else {
-      const cost = getSkillUpgradeCost(def.id, skill.level);
-      const lvlText = skill.unlocked ? `Lv.${skill.level}` : "未習得";
-      row.innerHTML = `<span class="skill-name">${def.name} <span class="skill-level">${lvlText}</span></span><span class="skill-desc">${def.baseDesc}</span><button class="skill-buy-btn">花費 ${cost}</button>`;
-      const btn = row.querySelector(".skill-buy-btn");
-      btn.disabled = state.player.currency < cost;
-      btn.addEventListener("pointerdown", (e) => {
-        e.preventDefault();
-        trySkillUpgrade(def.id);
-      });
-    }
-    list.appendChild(row);
-  });
+  list.appendChild(buildSkillRow(getSkillDef("homing")));
+  state.skillShopOffers.forEach((id) => list.appendChild(buildSkillRow(getSkillDef(id))));
+
+  const rerollBtn = document.getElementById("skill-reroll-btn");
+  if (rerollBtn) {
+    const rerollCost = getSkillRerollCost();
+    rerollBtn.textContent = `刷新技能 (花費 ${rerollCost})`;
+    rerollBtn.disabled = state.player.currency < rerollCost;
+    rerollBtn.onpointerdown = (e) => {
+      e.preventDefault();
+      trySkillReroll();
+    };
+  }
 }
 
 // ===== 輸入處理 =====
@@ -1162,9 +1350,6 @@ function updatePlayer(dt) {
     else if (nx < -0.05) p.facing = -1;
   }
 
-  p.x = clamp(p.x, p.radius, CANVAS_W - p.radius);
-  p.y = clamp(p.y, p.radius, CANVAS_H - p.radius);
-
   p.animTime += dt;
   p.moving = moving;
 
@@ -1179,6 +1364,25 @@ function updatePlayer(dt) {
   } else {
     p.history.length = 0;
   }
+
+  updateCamera();
+}
+
+// 攝影機鎖定置中於玩家：固定視角的雙搖桿式遊戲，不需要 lerp 平滑
+function updateCamera() {
+  const p = state.player;
+  state.camera.x = p.x - CANVAS_W / 2;
+  state.camera.y = p.y - CANVAS_H / 2;
+}
+
+// 判斷世界座標是否落在目前可視範圍（含 margin）內，取代固定的螢幕座標範圍判斷
+function isInExpandedViewport(x, y, margin) {
+  return (
+    x > state.camera.x - margin &&
+    x < state.camera.x + CANVAS_W + margin &&
+    y > state.camera.y - margin &&
+    y < state.camera.y + CANVAS_H + margin
+  );
 }
 
 // 發射一批追蹤彈（自動攻擊與手動氣功皆共用）
@@ -1239,12 +1443,31 @@ function updateAutoAttack(dt) {
 
   p.autoAtkTimer = p.atkInterval;
   spawnAutoFireBurst(p, Math.atan2(target.y - p.y, target.x - p.x));
-  fireHomingVolley(p, target, p.projCount, p.atkDamage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS, "homing");
+  const damage = Math.round(p.atkDamage * getEnrageMult(p));
+  fireHomingVolley(p, target, p.projCount, damage, p.projSpeed, AUTO_ATK_TURN_RATE, AUTO_ATK_RADIUS, "homing");
+}
+
+// 吸血掌：擊殺敵人時有機率回復氣血
+function tryVampireHeal() {
+  const p = state.player;
+  const skill = p.skills.vampire;
+  if (!skill.unlocked || skill.level <= 0) return;
+  if (Math.random() < skill.level * VAMPIRE_CHANCE_PER_LEVEL) {
+    p.hp = Math.min(p.maxHp, p.hp + VAMPIRE_HEAL_AMOUNT);
+  }
+}
+
+// 狂狼之力：氣血低於門檔時提升掌技／氣彈／自動攻擊傷害
+function getEnrageMult(p) {
+  const skill = p.skills.frenzy;
+  if (!skill.unlocked || skill.level <= 0) return 1;
+  if (p.hp / p.maxHp >= FRENZY_HP_THRESHOLD) return 1;
+  return 1 + skill.level * FRENZY_DMG_PER_LEVEL;
 }
 
 function getQiDamage() {
   const p = state.player;
-  return Math.round(QI_DAMAGE * (1 + (p.level - 1) * QI_GROWTH_RATE));
+  return Math.round(QI_DAMAGE * (1 + (p.level - 1) * QI_GROWTH_RATE) * getEnrageMult(p));
 }
 
 function tryQiAttack() {
@@ -1288,7 +1511,7 @@ function tryPalmAttack() {
 
 function getPalmDamage() {
   const p = state.player;
-  return Math.round(PALM_NOVA_DAMAGE * (1 + (p.level - 1) * PALM_GROWTH_RATE));
+  return Math.round(PALM_NOVA_DAMAGE * (1 + (p.level - 1) * PALM_GROWTH_RATE) * getEnrageMult(p));
 }
 
 function getSpiralBladeDamage() {
@@ -1298,7 +1521,9 @@ function getSpiralBladeDamage() {
 function palmNova(p) {
   triggerShake(0.25, 14);
   playPalmNovaSound();
-  spawnShockwave(p.x, p.y, p.palmRadius);
+  spawnSlashArcs(p.x, p.y, p.palmRadius);
+  spawnPalmSlash(p, 1);
+  spawnPalmSlash(p, -1);
   spawnExplosion(p.x, p.y, "rgba(58,214,255,0.9)", 20);
 
   const damage = getPalmDamage();
@@ -1322,6 +1547,7 @@ function palmSpiral(p) {
   triggerShake(0.2, 10);
   playPalmNovaSound();
   spawnExplosion(p.x, p.y, "rgba(192,96,255,0.9)", 16);
+  spawnExplosion(p.x, p.y, "rgba(40,10,60,0.85)", 10);
 
   for (let i = 0; i < SPIRAL_COUNT; i++) {
     state.spirals.push({
@@ -1364,23 +1590,40 @@ function updateSpirals(dt) {
   state.spirals = state.spirals.filter((s) => s.life > 0);
 }
 
+const SPIRAL_TRAIL_LAYERS = [
+  { angleOffset: 0, radiusOffset: 0, alphaMult: 1, color: "#d68dff" },
+  { angleOffset: -0.16, radiusOffset: -5, alphaMult: 0.5, color: "#8a3ad6" },
+  { angleOffset: -0.32, radiusOffset: -10, alphaMult: 0.25, color: "#3d1654" },
+];
+
 function drawSpirals() {
+  const p = state.player;
   for (const s of state.spirals) {
-    const alpha = Math.max(0, s.life / s.maxLife);
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.translate(s.x, s.y);
-    ctx.rotate(s.angle);
-    ctx.fillStyle = "#c060ff";
-    ctx.shadowColor = "#c060ff";
-    ctx.shadowBlur = 12;
-    ctx.beginPath();
-    ctx.moveTo(-SPIRAL_BLADE_RADIUS, 0);
-    ctx.lineTo(SPIRAL_BLADE_RADIUS, -4);
-    ctx.lineTo(SPIRAL_BLADE_RADIUS, 4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
+    const baseAlpha = Math.max(0, s.life / s.maxLife);
+    for (const layer of SPIRAL_TRAIL_LAYERS) {
+      const a = baseAlpha * layer.alphaMult;
+      if (a <= 0.01) continue;
+      const ang = s.angle + layer.angleOffset;
+      const rad = Math.max(4, s.radius + layer.radiusOffset);
+      const x = p.x + Math.cos(ang) * rad;
+      const y = p.y + Math.sin(ang) * rad;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.translate(x, y);
+      ctx.rotate(ang + Math.PI / 2);
+      ctx.shadowColor = layer.color;
+      ctx.shadowBlur = 12;
+      const len = SPIRAL_BLADE_RADIUS * 1.5;
+      const grad = ctx.createLinearGradient(-len, 0, len, 0);
+      grad.addColorStop(0, "rgba(0,0,0,0)");
+      grad.addColorStop(0.5, layer.color);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, len, SPIRAL_BLADE_RADIUS * 0.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 }
 
@@ -1412,7 +1655,7 @@ function updateOrbiters(dt) {
       y: p.y,
     }));
   }
-  p.orbitAngle += ORBIT_SPIN * dt;
+  p.orbitAngle += getSkillEffect("orbit", "spin") * dt;
   for (const blade of state.orbiters) {
     blade.x = p.x + Math.cos(p.orbitAngle + blade.angleOffset) * ORBIT_RADIUS;
     blade.y = p.y + Math.sin(p.orbitAngle + blade.angleOffset) * ORBIT_RADIUS;
@@ -1479,12 +1722,15 @@ function getPowerScaleFactor() {
   return levelFactor * skillFactor * timeFactor;
 }
 
+// 相對攝影機可視範圍邊緣取點（世界座標），取代原本固定的 [0,CANVAS_W]x[0,CANVAS_H]
 function pickSpawnEdgePoint(margin) {
+  const cx = state.camera.x;
+  const cy = state.camera.y;
   const side = Math.floor(Math.random() * 4); // 0 上 1 右 2 下 3 左
-  if (side === 0) return { x: Math.random() * CANVAS_W, y: -margin };
-  if (side === 1) return { x: CANVAS_W + margin, y: Math.random() * CANVAS_H };
-  if (side === 2) return { x: Math.random() * CANVAS_W, y: CANVAS_H + margin };
-  return { x: -margin, y: Math.random() * CANVAS_H };
+  if (side === 0) return { x: cx + Math.random() * CANVAS_W, y: cy - margin };
+  if (side === 1) return { x: cx + CANVAS_W + margin, y: cy + Math.random() * CANVAS_H };
+  if (side === 2) return { x: cx + Math.random() * CANVAS_W, y: cy + CANVAS_H + margin };
+  return { x: cx - margin, y: cy + Math.random() * CANVAS_H };
 }
 
 function spawnEnemy() {
@@ -1528,8 +1774,22 @@ function spawnEnemy() {
     knockUntil: 0,
     zigzagPhase: Math.random() * Math.PI * 2,
     ambushTriggered: typeDef.behavior !== "ambush",
+    ambushWarning: false,
+    ambushWarningTimer: 0,
     fireTimer: typeDef.fireIntervalMs ? Math.random() * typeDef.fireIntervalMs : 0,
+    fireIntervalMs: getEnemyFireInterval(baseType, typeDef),
   });
+}
+
+// volley 剛登場的頭 2 關射擊間隔放寬，避免新怪種一登場就太密集
+function getEnemyFireInterval(baseType, typeDef) {
+  if (!typeDef.fireIntervalMs) return 0;
+  if (baseType === "volley") {
+    const stagesSinceIntro = state.stage - TYPE_FIRST_STAGE.volley;
+    const buffer = VOLLEY_INTRO_BUFFER[stagesSinceIntro];
+    if (buffer) return Math.round(typeDef.fireIntervalMs * buffer);
+  }
+  return typeDef.fireIntervalMs;
 }
 
 function spawnBoss(stageIndex) {
@@ -1578,10 +1838,25 @@ function updateStage(dt) {
     console.log(`[stage] entering stage ${nextStage + 1}`);
     triggerShake(0.15, 6);
     if (nextStage >= 1 && !state.bossActive) {
-      spawnBoss(nextStage);
-      state.bossCyclesSpawned += 1;
-      state.bossRepeatTimer = 0;
+      const introducesNewType = STAGE_NORMAL_TYPE_POOL[nextStage].some(
+        (t) => TYPE_FIRST_STAGE[t] === nextStage
+      );
+      if (introducesNewType) {
+        // 新怪種剛登場，延後 boss 生成，讓玩家先適應新怪
+        state.bossSpawnAt = state.elapsed + BOSS_INTRO_DELAY_SEC;
+      } else {
+        spawnBoss(nextStage);
+        state.bossCyclesSpawned += 1;
+        state.bossRepeatTimer = 0;
+      }
     }
+  }
+
+  if (state.bossSpawnAt > 0 && !state.bossActive && state.elapsed >= state.bossSpawnAt) {
+    spawnBoss(state.stage);
+    state.bossCyclesSpawned += 1;
+    state.bossRepeatTimer = 0;
+    state.bossSpawnAt = 0;
   }
 
   // 最終關卡之後，每隔一段時間再次觸發 boss，讓無限模式持續有節點
@@ -1632,9 +1907,10 @@ function updateEnemies(dt) {
         spawnShockwave(e.x, e.y, BOSS_SHOCK_RADIUS);
         triggerShake(0.25, 12);
         if (dist < BOSS_SHOCK_RADIUS + p.radius && now > p.invulnUntil) {
-          applyDamage(p, BOSS_SHOCK_DAMAGE);
-          p.invulnUntil = now + PLAYER_IFRAME_MS;
-          playHurtSound();
+          if (applyDamage(p, BOSS_SHOCK_DAMAGE)) {
+            p.invulnUntil = now + PLAYER_IFRAME_MS;
+            playHurtSound();
+          }
         }
       }
     } else if (e.behavior === "zigzag") {
@@ -1645,8 +1921,13 @@ function updateEnemies(dt) {
     } else if (e.behavior === "ambush") {
       if (!e.ambushTriggered && dist < ENEMY_TYPE_DEFS.lurker.triggerRadius) {
         e.ambushTriggered = true;
+        e.ambushWarning = true;
+        e.ambushWarningTimer = ENEMY_TYPE_DEFS.lurker.warningSec;
       }
-      if (e.ambushTriggered) {
+      if (e.ambushWarning) {
+        e.ambushWarningTimer -= dt;
+        if (e.ambushWarningTimer <= 0) e.ambushWarning = false;
+      } else if (e.ambushTriggered) {
         const dashSpeed = e.speed * ENEMY_TYPE_DEFS.lurker.dashSpeedMult;
         e.x += nx * dashSpeed * dt;
         e.y += ny * dashSpeed * dt;
@@ -1662,7 +1943,7 @@ function updateEnemies(dt) {
       }
       e.fireTimer -= dt * 1000;
       if (e.fireTimer <= 0) {
-        e.fireTimer = ENEMY_TYPE_DEFS.volley.fireIntervalMs;
+        e.fireTimer = e.fireIntervalMs;
         spawnEnemyProjectile(e, nx, ny);
       }
     } else {
@@ -1680,6 +1961,7 @@ function updateEnemies(dt) {
       playKillSound();
       addXp(e.killXp);
       rollCurrencyDrop(e);
+      tryVampireHeal();
       if (e.type === "boss") {
         state.bossActive = false;
         state.bossRepeatTimer = 0;
@@ -1701,10 +1983,11 @@ function updateEnemies(dt) {
     e.knockUntil = now + 150;
 
     if (!damaged && now > p.invulnUntil) {
-      applyDamage(p, e.touchDamage);
-      p.invulnUntil = now + PLAYER_IFRAME_MS;
-      triggerShake(0.15, 8);
-      playHurtSound();
+      if (applyDamage(p, e.touchDamage)) {
+        p.invulnUntil = now + PLAYER_IFRAME_MS;
+        triggerShake(0.15, 8);
+        playHurtSound();
+      }
       damaged = true;
     }
   }
@@ -1732,14 +2015,15 @@ function updateEnemyProjectiles(dt) {
   state.enemyProjectiles = state.enemyProjectiles.filter((proj) => {
     if (circleHit(proj, p)) {
       if (now > p.invulnUntil) {
-        applyDamage(p, proj.damage);
-        p.invulnUntil = now + PLAYER_IFRAME_MS;
-        triggerShake(0.1, 6);
-        playHurtSound();
+        if (applyDamage(p, proj.damage)) {
+          p.invulnUntil = now + PLAYER_IFRAME_MS;
+          triggerShake(0.1, 6);
+          playHurtSound();
+        }
       }
       return false;
     }
-    return proj.x > -50 && proj.x < CANVAS_W + 50 && proj.y > -50 && proj.y < CANVAS_H + 50;
+    return isInExpandedViewport(proj.x, proj.y, 50);
   });
 }
 
@@ -1810,14 +2094,7 @@ function updateProjectiles(dt) {
     }
   }
 
-  state.projectiles = state.projectiles.filter(
-    (proj) =>
-      !proj.hit &&
-      proj.x > -50 &&
-      proj.x < CANVAS_W + 50 &&
-      proj.y > -50 &&
-      proj.y < CANVAS_H + 50
-  );
+  state.projectiles = state.projectiles.filter((proj) => !proj.hit && isInExpandedViewport(proj.x, proj.y, 50));
 }
 
 // ===== Game Over =====
@@ -2085,6 +2362,20 @@ function drawEnemy(e) {
   ctx.save();
   ctx.translate(e.x, e.y);
 
+  if (e.ambushWarning) {
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 70);
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.35 * pulse;
+    ctx.strokeStyle = "#ff3b3b";
+    ctx.shadowColor = "#ff3b3b";
+    ctx.shadowBlur = 16;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, e.radius + 6 + pulse * 6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, e.radius);
   if (hurt) {
     grad.addColorStop(0, "#ffffff");
@@ -2150,53 +2441,187 @@ const FAR_MOUNTAINS = [
   { baseX: 420, width: 120, height: 45 },
 ];
 
-const GRASS_TUFTS = Array.from({ length: 18 }, (_, i) => ({
-  x: (i * 47 + 20) % CANVAS_W,
-  y: HORIZON_Y + 12 + ((i * 31) % (CANVAS_H - HORIZON_Y - 20)),
-  size: 6 + (i % 3) * 2,
+const STAR_FIELD = Array.from({ length: 40 }, (_, i) => ({
+  x: (i * 53 + 17) % CANVAS_W,
+  y: (i * 29 + 5) % HORIZON_Y,
+  size: 1 + (i % 3),
 }));
 
+// 三組輪替場景：沙漠黃昏／竹林夜月／古城門遺跡夜景，每 1-2 關切換一次
+const SCENES = [
+  {
+    name: "沙漠黃昏",
+    skyTop: "#4a2a22",
+    skyMid: "#c9784a",
+    skyBottom: "#ffb066",
+    groundTop: "#6b4a28",
+    groundBottom: "#2c1d10",
+    mountainColor: "rgba(90,55,30,0.55)",
+    skyDecor: "sun",
+    drawDecor(c, x, y, hash) {
+      c.fillStyle = "#7a5a3a";
+      c.beginPath();
+      c.ellipse(x, y, 8 + hash * 10, 4 + hash * 5, 0, 0, Math.PI * 2);
+      c.fill();
+    },
+  },
+  {
+    name: "竹林夜月",
+    skyTop: "#0a1430",
+    skyMid: "#1c2a55",
+    skyBottom: "#34406a",
+    groundTop: "#16240f",
+    groundBottom: "#0a120a",
+    mountainColor: "rgba(20,40,30,0.6)",
+    skyDecor: "moon",
+    drawDecor(c, x, y, hash) {
+      if (hash < 0.15) {
+        c.save();
+        c.fillStyle = "#caffb0";
+        c.shadowColor = "#caffb0";
+        c.shadowBlur = 10;
+        c.beginPath();
+        c.arc(x, y, 2.4, 0, Math.PI * 2);
+        c.fill();
+        c.restore();
+        return;
+      }
+      c.strokeStyle = "#3f6a3a";
+      c.lineWidth = 4;
+      c.beginPath();
+      c.moveTo(x, y + 14);
+      c.lineTo(x, y - 14);
+      c.stroke();
+      c.strokeStyle = "#5a8a52";
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(x, y - 6);
+      c.lineTo(x + 8, y - 10);
+      c.stroke();
+    },
+  },
+  {
+    name: "古城門遺跡夜景",
+    skyTop: "#10101c",
+    skyMid: "#241f30",
+    skyBottom: "#463a4a",
+    groundTop: "#2a2422",
+    groundBottom: "#14110f",
+    mountainColor: "rgba(40,35,45,0.6)",
+    skyDecor: "stars",
+    drawDecor(c, x, y, hash) {
+      if (hash < 0.2) {
+        c.save();
+        c.fillStyle = "#ffae42";
+        c.shadowColor = "#ffae42";
+        c.shadowBlur = 14;
+        c.beginPath();
+        c.arc(x, y, 5, 0, Math.PI * 2);
+        c.fill();
+        c.restore();
+        return;
+      }
+      c.fillStyle = "#5a4a48";
+      c.fillRect(x - 5, y - 18, 10, 18);
+    },
+  },
+];
+
+const STAGE_SCENE_INDEX = [0, 0, 1, 1, 2, 2, 0, 1];
+
+function getCurrentScene() {
+  return SCENES[STAGE_SCENE_INDEX[state.stage] || 0];
+}
+
+function drawSkyDecor(scene) {
+  if (scene.skyDecor === "sun") {
+    ctx.save();
+    ctx.fillStyle = "#ffd27a";
+    ctx.shadowColor = "#ffb066";
+    ctx.shadowBlur = 30;
+    ctx.beginPath();
+    ctx.arc(CANVAS_W * 0.72, HORIZON_Y * 0.35, 34, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else if (scene.skyDecor === "moon") {
+    ctx.save();
+    ctx.fillStyle = "#eaf0ff";
+    ctx.shadowColor = "#bcd0ff";
+    ctx.shadowBlur = 24;
+    ctx.beginPath();
+    ctx.arc(CANVAS_W * 0.28, HORIZON_Y * 0.3, 26, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else if (scene.skyDecor === "stars") {
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    for (const star of STAR_FIELD) {
+      ctx.fillRect(star.x, star.y, star.size, star.size);
+    }
+  }
+}
+
+const GROUND_DECOR_SPACING = 90;
+
+// 地面裝飾在世界座標上以固定間距取樣，X/Y 兩方向皆隨攝影機 tile，玩家往任意方向走都連續
+function drawGroundDecor(scene) {
+  const camX = state.camera.x;
+  const camY = state.camera.y;
+  const startCol = Math.floor(camX / GROUND_DECOR_SPACING) - 1;
+  const endCol = Math.floor((camX + CANVAS_W) / GROUND_DECOR_SPACING) + 1;
+  const startRow = Math.floor(camY / GROUND_DECOR_SPACING) - 1;
+  const endRow = Math.floor((camY + CANVAS_H) / GROUND_DECOR_SPACING) + 1;
+  for (let row = startRow; row <= endRow; row++) {
+    for (let col = startCol; col <= endCol; col++) {
+      const hash = Math.abs(Math.sin(col * 12.9898 + row * 78.233) * 43758.5453) % 1;
+      if (hash > 0.4) continue;
+      const worldX = col * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2;
+      const worldY = row * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2;
+      const screenX = worldX - camX;
+      const screenY = worldY - camY;
+      if (screenY < HORIZON_Y - 20 || screenY > CANVAS_H + 20) continue;
+      scene.drawDecor(ctx, screenX, screenY, hash);
+    }
+  }
+}
+
 function drawBackground() {
-  // 黃昏天空，隨關卡推進轉趨深暗
+  const scene = getCurrentScene();
+
+  // 天空：螢幕固定，不隨攝影機捲動
   const skyGrad = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
-  skyGrad.addColorStop(0, STAGE_CONFIGS[state.stage].skyTint);
-  skyGrad.addColorStop(0.55, "#7a4a5a");
-  skyGrad.addColorStop(1, "#c98a5a");
+  skyGrad.addColorStop(0, scene.skyTop);
+  skyGrad.addColorStop(0.55, scene.skyMid);
+  skyGrad.addColorStop(1, scene.skyBottom);
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, CANVAS_W, HORIZON_Y);
 
-  // 遠山輪廓
-  ctx.fillStyle = "rgba(50,30,60,0.6)";
-  for (const m of FAR_MOUNTAINS) {
-    ctx.beginPath();
-    ctx.moveTo(m.baseX - m.width / 2, HORIZON_Y);
-    ctx.lineTo(m.baseX, HORIZON_Y - m.height);
-    ctx.lineTo(m.baseX + m.width / 2, HORIZON_Y);
-    ctx.closePath();
-    ctx.fill();
+  drawSkyDecor(scene);
+
+  // 遠山輪廓：水平方向以 CANVAS_W 為週期，隨攝影機 x 捲動
+  const mountainOffset = ((state.camera.x % CANVAS_W) + CANVAS_W) % CANVAS_W;
+  ctx.fillStyle = scene.mountainColor;
+  for (const xOff of [-mountainOffset - CANVAS_W, -mountainOffset, -mountainOffset + CANVAS_W]) {
+    for (const m of FAR_MOUNTAINS) {
+      ctx.beginPath();
+      ctx.moveTo(xOff + m.baseX - m.width / 2, HORIZON_Y);
+      ctx.lineTo(xOff + m.baseX, HORIZON_Y - m.height);
+      ctx.lineTo(xOff + m.baseX + m.width / 2, HORIZON_Y);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 
-  // 地面
+  // 地面底色：螢幕固定
   const groundGrad = ctx.createLinearGradient(0, HORIZON_Y, 0, CANVAS_H);
-  groundGrad.addColorStop(0, "#3a3320");
-  groundGrad.addColorStop(1, "#1c1810");
+  groundGrad.addColorStop(0, scene.groundTop);
+  groundGrad.addColorStop(1, scene.groundBottom);
   ctx.fillStyle = groundGrad;
   ctx.fillRect(0, HORIZON_Y, CANVAS_W, CANVAS_H - HORIZON_Y);
 
-  // 地平線亮邊
-  ctx.fillStyle = "rgba(255,200,140,0.4)";
+  ctx.fillStyle = "rgba(255,200,140,0.3)";
   ctx.fillRect(0, HORIZON_Y, CANVAS_W, 2);
 
-  // 草叢
-  ctx.fillStyle = "#3f5a2a";
-  for (const tuft of GRASS_TUFTS) {
-    ctx.beginPath();
-    ctx.moveTo(tuft.x - tuft.size, tuft.y);
-    ctx.lineTo(tuft.x, tuft.y - tuft.size * 1.6);
-    ctx.lineTo(tuft.x + tuft.size, tuft.y);
-    ctx.closePath();
-    ctx.fill();
-  }
+  drawGroundDecor(scene);
 }
 
 function render() {
@@ -2211,6 +2636,9 @@ function render() {
   }
 
   drawBackground();
+
+  ctx.save();
+  ctx.translate(-state.camera.x, -state.camera.y);
   drawDrops();
   for (const e of state.enemies) drawEnemy(e);
   drawEnemyProjectiles();
@@ -2222,6 +2650,7 @@ function render() {
   drawPlayer();
   drawDamageTexts();
   drawPickupTexts();
+  ctx.restore();
 
   ctx.restore();
 
@@ -2240,6 +2669,7 @@ function updateGameScale() {
 
 // ===== 觸控控制：圓形虛擬搖桿 =====
 const JOYSTICK_MAX_DIST = 33;
+const JOYSTICK_SENSITIVITY_CURVE = 0.6;
 
 function drawJoystick() {
   const w = joystickCanvas.width;
@@ -2298,7 +2728,7 @@ function bindJoystick() {
     const angle = Math.atan2(dy, dx);
     state.joystick.knobX = Math.cos(angle) * clamped;
     state.joystick.knobY = Math.sin(angle) * clamped;
-    const mag = clamped / JOYSTICK_MAX_DIST;
+    const mag = Math.pow(clamped / JOYSTICK_MAX_DIST, JOYSTICK_SENSITIVITY_CURVE);
     state.joystick.dx = Math.cos(angle) * mag;
     state.joystick.dy = Math.sin(angle) * mag;
   }
@@ -2365,7 +2795,7 @@ function bindActionButton(btn, triggerFn) {
 
 // ===== 主迴圈 =====
 function update(dt, timestamp) {
-  if (state.skillMenuOpen) {
+  if (state.skillMenuOpen || state.upgradeChoices.length > 0) {
     updateUI();
     return;
   }
@@ -2376,6 +2806,7 @@ function update(dt, timestamp) {
   updateAutoAttack(dt);
   updateOrbiters(dt);
   updateThrowSkill(dt);
+  updateBarrier(dt);
   updatePalmRecharge(dt);
   updateEnemySpawning(timestamp);
   updateEnemies(dt);
