@@ -2,6 +2,30 @@
 const CANVAS_W = 450;
 const CANVAS_H = 800;
 
+// ===== 安全圖片載入系統 =====
+// 圖片載入失敗或尚未提供時，遊戲必須維持可玩（fallback 到 Canvas 繪製），
+// 因此這裡只 console.warn，絕不 throw。
+const assetImages = {};
+
+function loadImage(key, src) {
+  const img = new Image();
+  img.onload = () => {
+    assetImages[key] = img;
+  };
+  img.onerror = () => {
+    console.warn(`[assets] 圖片載入失敗，將使用 Canvas fallback：${key} (${src})`);
+  };
+  img.src = src;
+}
+
+function loadAssets() {
+  loadImage("desert_dusk", "assets/backgrounds/desert_dusk.png");
+  loadImage("bamboo_moon", "assets/backgrounds/bamboo_moon.png");
+  loadImage("ruins_night", "assets/backgrounds/ruins_night.png");
+  loadImage("qingfeng_concept", "assets/characters/qingfeng_concept.png");
+  loadImage("yexuan_concept", "assets/characters/yexuan_concept.png");
+}
+
 const PLAYER_SPEED = 200; // px/秒
 const PLAYER_MAX_HP = 150;
 const PLAYER_RADIUS = 18;
@@ -226,6 +250,9 @@ const CHARACTERS = [
     desc: "掌心劈砍擴散　斬擊四周敵人",
     palmAbility: "nova",
     palmName: "霸王斬",
+    spriteKey: "qingfeng",
+    conceptKey: "qingfeng_concept",
+    spriteHeight: 72,
   },
   {
     id: "yexuan",
@@ -236,6 +263,9 @@ const CHARACTERS = [
     desc: "分身術　漩渦擴散攻擊",
     palmAbility: "spiral",
     palmName: "魅影分身",
+    spriteKey: "yexuan",
+    conceptKey: "yexuan_concept",
+    spriteHeight: 72,
   },
 ];
 
@@ -2340,6 +2370,24 @@ function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha) {
   ctx.restore();
 }
 
+// 若角色已提供正式透明 sprite（assetImages[character.spriteKey]）才用 drawImage 畫角色，
+// 目前兩名角色都還沒有正式 sprite，因此一律走 drawPlayerShape() 的 Canvas 繪製。
+function drawPlayerSprite(x, y, facing, animTime, moving, hurt, alpha, character) {
+  const sprite = character && character.spriteKey && assetImages[character.spriteKey];
+  if (!sprite) {
+    drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha);
+    return;
+  }
+  const h = character.spriteHeight || 72;
+  const w = (sprite.width / sprite.height) * h;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(x, y);
+  if (facing < 0) ctx.scale(-1, 1);
+  ctx.drawImage(sprite, -w / 2, -h, w, h);
+  ctx.restore();
+}
+
 function drawPlayer() {
   const p = state.player;
   const hurt = isHurt(p);
@@ -2348,10 +2396,10 @@ function drawPlayer() {
   for (let i = 0; i < p.history.length; i++) {
     const h = p.history[i];
     const alpha = ((i + 1) / (p.history.length + 1)) * 0.35;
-    drawPlayerShape(h.x, h.y, h.facing, h.animTime, true, false, alpha);
+    drawPlayerSprite(h.x, h.y, h.facing, h.animTime, true, false, alpha, p.character);
   }
 
-  drawPlayerShape(p.x, p.y, p.facing, p.animTime, p.moving, hurt, 1);
+  drawPlayerSprite(p.x, p.y, p.facing, p.animTime, p.moving, hurt, 1, p.character);
 }
 
 function drawEnemy(e) {
@@ -2451,6 +2499,7 @@ const STAR_FIELD = Array.from({ length: 40 }, (_, i) => ({
 const SCENES = [
   {
     name: "沙漠黃昏",
+    bgKey: "desert_dusk",
     skyTop: "#4a2a22",
     skyMid: "#c9784a",
     skyBottom: "#ffb066",
@@ -2459,14 +2508,19 @@ const SCENES = [
     mountainColor: "rgba(90,55,30,0.55)",
     skyDecor: "sun",
     drawDecor(c, x, y, hash) {
-      c.fillStyle = "#7a5a3a";
+      // 極淡、低對比的沙地紋理色塊，刻意避開正圓/正橢圓的「點狀」輪廓
+      const grad = c.createRadialGradient(x, y, 0, x, y, 14 + hash * 12);
+      grad.addColorStop(0, "rgba(110,80,50,0.10)");
+      grad.addColorStop(1, "rgba(110,80,50,0)");
+      c.fillStyle = grad;
       c.beginPath();
-      c.ellipse(x, y, 8 + hash * 10, 4 + hash * 5, 0, 0, Math.PI * 2);
+      c.ellipse(x, y, 14 + hash * 12, 6 + hash * 5, hash * Math.PI, 0, Math.PI * 2);
       c.fill();
     },
   },
   {
     name: "竹林夜月",
+    bgKey: "bamboo_moon",
     skyTop: "#0a1430",
     skyMid: "#1c2a55",
     skyBottom: "#34406a",
@@ -2475,24 +2529,24 @@ const SCENES = [
     mountainColor: "rgba(20,40,30,0.6)",
     skyDecor: "moon",
     drawDecor(c, x, y, hash) {
-      if (hash < 0.15) {
+      if (hash < 0.1) {
         c.save();
-        c.fillStyle = "#caffb0";
-        c.shadowColor = "#caffb0";
-        c.shadowBlur = 10;
+        c.fillStyle = "rgba(202,255,176,0.35)";
+        c.shadowColor = "rgba(202,255,176,0.35)";
+        c.shadowBlur = 5;
         c.beginPath();
-        c.arc(x, y, 2.4, 0, Math.PI * 2);
+        c.arc(x, y, 1.3, 0, Math.PI * 2);
         c.fill();
         c.restore();
         return;
       }
-      c.strokeStyle = "#3f6a3a";
+      c.strokeStyle = "rgba(63,106,58,0.45)";
       c.lineWidth = 4;
       c.beginPath();
       c.moveTo(x, y + 14);
       c.lineTo(x, y - 14);
       c.stroke();
-      c.strokeStyle = "#5a8a52";
+      c.strokeStyle = "rgba(90,138,82,0.4)";
       c.lineWidth = 2;
       c.beginPath();
       c.moveTo(x, y - 6);
@@ -2502,6 +2556,7 @@ const SCENES = [
   },
   {
     name: "古城門遺跡夜景",
+    bgKey: "ruins_night",
     skyTop: "#10101c",
     skyMid: "#241f30",
     skyBottom: "#463a4a",
@@ -2510,18 +2565,18 @@ const SCENES = [
     mountainColor: "rgba(40,35,45,0.6)",
     skyDecor: "stars",
     drawDecor(c, x, y, hash) {
-      if (hash < 0.2) {
+      if (hash < 0.12) {
         c.save();
-        c.fillStyle = "#ffae42";
-        c.shadowColor = "#ffae42";
-        c.shadowBlur = 14;
+        c.fillStyle = "rgba(255,174,66,0.4)";
+        c.shadowColor = "rgba(255,174,66,0.4)";
+        c.shadowBlur = 8;
         c.beginPath();
-        c.arc(x, y, 5, 0, Math.PI * 2);
+        c.arc(x, y, 2.6, 0, Math.PI * 2);
         c.fill();
         c.restore();
         return;
       }
-      c.fillStyle = "#5a4a48";
+      c.fillStyle = "rgba(90,74,72,0.4)";
       c.fillRect(x - 5, y - 18, 10, 18);
     },
   },
@@ -2560,9 +2615,10 @@ function drawSkyDecor(scene) {
   }
 }
 
-const GROUND_DECOR_SPACING = 90;
+const GROUND_DECOR_SPACING = 140;
 
-// 地面裝飾在世界座標上以固定間距取樣，X/Y 兩方向皆隨攝影機 tile，玩家往任意方向走都連續
+// 地面裝飾在世界座標上以較寬間距取樣，並用第二組雜湊值在格內隨機偏移，
+// 避免呈現「一顆一顆規律排列」的網格點狀外觀；整體再疊一層低透明度淡化。
 function drawGroundDecor(scene) {
   const camX = state.camera.x;
   const camY = state.camera.y;
@@ -2570,23 +2626,40 @@ function drawGroundDecor(scene) {
   const endCol = Math.floor((camX + CANVAS_W) / GROUND_DECOR_SPACING) + 1;
   const startRow = Math.floor(camY / GROUND_DECOR_SPACING) - 1;
   const endRow = Math.floor((camY + CANVAS_H) / GROUND_DECOR_SPACING) + 1;
+  ctx.save();
+  ctx.globalAlpha = 0.5;
   for (let row = startRow; row <= endRow; row++) {
     for (let col = startCol; col <= endCol; col++) {
       const hash = Math.abs(Math.sin(col * 12.9898 + row * 78.233) * 43758.5453) % 1;
-      if (hash > 0.4) continue;
-      const worldX = col * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2;
-      const worldY = row * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2;
+      if (hash > 0.22) continue;
+      const jitterHash = Math.abs(Math.sin(col * 39.346 + row * 11.135) * 27543.123) % 1;
+      const jitterX = (jitterHash - 0.5) * GROUND_DECOR_SPACING * 0.6;
+      const jitterY = (((jitterHash * 7) % 1) - 0.5) * GROUND_DECOR_SPACING * 0.6;
+      const worldX = col * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2 + jitterX;
+      const worldY = row * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2 + jitterY;
       const screenX = worldX - camX;
       const screenY = worldY - camY;
       if (screenY < HORIZON_Y - 20 || screenY > CANVAS_H + 20) continue;
       scene.drawDecor(ctx, screenX, screenY, hash);
     }
   }
+  ctx.restore();
 }
 
 function drawBackground() {
   const scene = getCurrentScene();
+  const bgImg = scene.bgKey && assetImages[scene.bgKey];
 
+  if (bgImg) {
+    // 已載入美術背景圖：直接鋪滿畫面，疊一層暗色遮罩避免過亮，
+    // 不再疊加 procedural 地面點。
+    ctx.drawImage(bgImg, 0, 0, CANVAS_W, CANVAS_H);
+    ctx.fillStyle = "rgba(0,0,0,0.26)";
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    return;
+  }
+
+  // Fallback：原本的 Canvas 漸層背景（已淡化地面裝飾，不再出現明顯點狀物）
   // 天空：螢幕固定，不隨攝影機捲動
   const skyGrad = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
   skyGrad.addColorStop(0, scene.skyTop);
@@ -2852,6 +2925,7 @@ function gameLoop(timestamp) {
 }
 
 // ===== 啟動 =====
+loadAssets();
 resetState(CHARACTERS[0].id);
 renderCharacterSelect();
 lastTime = performance.now();
