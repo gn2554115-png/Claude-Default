@@ -1,3 +1,16 @@
+// ===== game.js（遊戲邏輯層）=====
+// 渲染已全面移交 engine3d.js（Three.js 2.5D）；本檔保留全部玩法邏輯、輸入、UI DOM 與音訊合成。
+import {
+  initEngine,
+  engineRender,
+  engineReset,
+  applyScene,
+  sceneTransition,
+  setBossTint,
+  fxLight,
+  worldToScreen,
+} from "./engine3d.js";
+
 // ===== 常數設定 =====
 const CANVAS_W = 450;
 const CANVAS_H = 800;
@@ -19,11 +32,6 @@ function loadImage(key, src) {
 }
 
 function loadAssets() {
-  loadImage("desert_dusk", "assets/backgrounds/desert_dusk.png");
-  loadImage("bamboo_moon", "assets/backgrounds/bamboo_moon.png");
-  loadImage("ruins_night", "assets/backgrounds/ruins_night.png");
-  loadImage("qingfeng_concept", "assets/characters/qingfeng_concept.png");
-  loadImage("yexuan_concept", "assets/characters/yexuan_concept.png");
   loadImage("qingfeng", "assets/characters/char_blue_200.png");
   loadImage("yexuan", "assets/characters/char_purple_200.png");
   loadImage("qingfeng_card", "assets/characters/char_blue_400.png");
@@ -32,7 +40,6 @@ function loadAssets() {
   loadImage("qingfeng_fx_ult", "assets/characters/fx_red_ult_512.png");
   loadImage("yexuan_fx_basic", "assets/characters/fx_purple_basic_256.png");
   loadImage("yexuan_fx_ult", "assets/characters/fx_purple_ult_512.png");
-  loadImage("bingyun_concept", "assets/characters/char_white_400.png");
   loadImage("bingyun", "assets/characters/char_white_200.png");
   loadImage("bingyun_card", "assets/characters/char_white_400.png");
   loadImage("bingyun_fx_basic", "assets/characters/fx_blue_basic_256.png");
@@ -114,6 +121,14 @@ const STAGE_CONFIGS = [
 
 // 同時存在敵人數上限：超過此數時暫停出怪（既有敵人不會被強制移除），避免後期關卡無限疊加造成嚴重lag
 const MAX_ALIVE_ENEMIES = 70;
+
+// P17：菁英怪詞綴——第4關（index 3）起，通過 brute 判定之外另擲 10% 機率成為菁英
+// swift=疾速（藍光）、split=分裂（綠光，死亡分裂2小怪）、blast=爆炸（橘光，死亡自爆傷玩家）
+const ELITE_START_STAGE = 3;
+const ELITE_CHANCE = 0.1;
+const ELITE_TYPES = ["swift", "split", "blast"];
+const ELITE_HP_MULT = 1.6;
+const ELITE_SCORE_MULT = 2.5;
 
 // 新怪種剛登場時的緩衝（只套用在 volley 身上，避免遠程攻擊一登場就太密集）
 const TYPE_FIRST_STAGE = { drifter: 0, skitter: 1, lurker: 2, volley: 3, juggernaut: 4 };
@@ -353,6 +368,7 @@ const CHARACTERS = [
     spriteKey: "bingyun",
     conceptKey: "bingyun_concept",
     spriteHeight: 72,
+    spriteFacesLeft: true,
     cardSrc: "assets/characters/char_white_400.png",
     fxBasicKey: "bingyun_fx_basic",
     fxUltKey: "bingyun_fx_ult",
@@ -483,6 +499,7 @@ const state = {
   spirals: [],
   orbiters: [],
   drops: [],
+  chests: [],
   orbitHitMap: new Map(),
   score: 0,
   kills: 0,
@@ -507,6 +524,13 @@ const state = {
   bgScrollY: 0,
   dust: [],
   fxOverlays: [],
+  // P17 新增
+  victoryPause: false,
+  victoryShown: false,
+  finalBossSpawned: false,
+  killStreak: 0,
+  killStreakUntil: 0,
+  stageBannerUntil: 0,
 };
 
 function resetState(characterId) {
@@ -563,6 +587,11 @@ function resetState(characterId) {
     blockFlashUntil: 0,
     vampireFxUntil: 0,
     frenzyParticleTimer: 0,
+    // P17：技能進化系統
+    cardCounts: {},
+    orbitEvolved: false,
+    throwEvolved: false,
+    vampireEvolved: false,
     skills: {
       homing: { unlocked: true, level: 1 },
       orbit: { unlocked: false, level: 0 },
@@ -583,6 +612,7 @@ function resetState(characterId) {
   state.spirals = [];
   state.orbiters = [];
   state.drops = [];
+  state.chests = [];
   state.orbitHitMap = new Map();
   state.score = 0;
   state.kills = 0;
@@ -610,9 +640,20 @@ function resetState(characterId) {
   state.camera.y = state.player.y - CANVAS_H / 2;
   state.bgScrollX = state.camera.x;
   state.bgScrollY = state.camera.y;
-  state.dust = createDustField(getCurrentScene());
+  state.victoryPause = false;
+  state.victoryShown = false;
+  state.finalBossSpawned = false;
+  state.killStreak = 0;
+  state.killStreakUntil = 0;
+  state.stageBannerUntil = 0;
+
+  applyMetaToPlayer(state.player);
+  engineReset();
+  applyScene(STAGE_SCENE_INDEX[0], true);
+  setBossTint(false);
 
   setBgmVolume(BGM_NORMAL_VOLUME);
+  document.getElementById("victory-screen").classList.add("hidden");
   document.getElementById("game-over-screen").classList.add("hidden");
   const cardBox = document.getElementById("level-up-cards");
   cardBox.innerHTML = "";
@@ -720,24 +761,6 @@ function updateParticles(dt) {
 
   state.particles = state.particles.filter((pt) => pt.life > 0);
 }
-
-function drawParticles() {
-  for (const pt of state.particles) {
-    const alpha = Math.max(0, pt.life / pt.maxLife);
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    if (pt.glow) {
-      ctx.shadowColor = pt.color;
-      ctx.shadowBlur = 10;
-    }
-    ctx.fillStyle = pt.color;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
 function emitEnemyFlame(e, dt) {
   e.particleTimer -= dt * 1000;
   if (e.particleTimer > 0) return;
@@ -760,6 +783,15 @@ function emitEnemyFlame(e, dt) {
 }
 
 function emitQiTrail(proj) {
+  // 霜凜氣勁專屬冰藍拖尾（原 hotfix 覆寫邏輯併回本體）
+  if (proj && proj.imgKey === "bingyun_fx_basic") {
+    spawnParticle({
+      x: proj.x, y: proj.y, vx: 0, vy: 0,
+      life: 0.34, maxLife: 0.34, size: 4,
+      color: "rgba(189,244,255,0.82)", type: "trail", glow: false,
+    });
+    return;
+  }
   const isQi = proj.kind === "qi";
   const color = proj.color || (isQi ? "rgba(255,138,58,0.85)" : "rgba(58,214,255,0.7)");
   spawnParticle({
@@ -889,22 +921,6 @@ function updateDamageTexts(dt) {
   }
   state.damageTexts = state.damageTexts.filter((dtxt) => dtxt.life > 0);
 }
-
-function drawDamageTexts() {
-  ctx.save();
-  ctx.font = "bold 18px sans-serif";
-  ctx.textAlign = "center";
-  for (const dtxt of state.damageTexts) {
-    const alpha = Math.max(0, dtxt.life / dtxt.maxLife);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = "#ffd84d";
-    ctx.shadowColor = "#000";
-    ctx.shadowBlur = 4;
-    ctx.fillText(`-${dtxt.value}`, dtxt.x, dtxt.y);
-  }
-  ctx.restore();
-}
-
 // ===== 怪物掉落物（內力珠，須走過去拾取，magnet 技能可擴大吸引半徑） =====
 function rollCurrencyDrop(e) {
   const isBoss = e.type === "boss";
@@ -948,26 +964,6 @@ function updateDrops(dt) {
     return true;
   });
 }
-
-function drawDrops() {
-  for (const drop of state.drops) {
-    const bob = Math.sin(drop.bobPhase) * 3;
-    ctx.save();
-    ctx.translate(drop.x, drop.y + bob);
-    const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, 8);
-    grad.addColorStop(0, "#fff7cc");
-    grad.addColorStop(0.6, "#ffd84d");
-    grad.addColorStop(1, "#b8860b");
-    ctx.fillStyle = grad;
-    ctx.shadowColor = "#ffd84d";
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.arc(0, 0, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
 function spawnPickupText(x, y, amount, isLabel) {
   state.pickupTexts.push({ x, y: y - 14, amount, isLabel: !!isLabel, isHeal: false, life: 0.5, maxLife: 0.5, vy: -36 });
 }
@@ -984,22 +980,6 @@ function updatePickupTexts(dt) {
   }
   state.pickupTexts = state.pickupTexts.filter((t) => t.life > 0);
 }
-
-function drawPickupTexts() {
-  ctx.save();
-  ctx.font = "bold 14px sans-serif";
-  ctx.textAlign = "center";
-  for (const t of state.pickupTexts) {
-    const alpha = Math.max(0, t.life / t.maxLife);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = t.isHeal ? "#3fe080" : t.isLabel ? "#7adfff" : "#ffe48a";
-    ctx.shadowColor = "#000";
-    ctx.shadowBlur = 4;
-    ctx.fillText(t.isLabel ? t.amount : `+${t.amount}`, t.x, t.y);
-  }
-  ctx.restore();
-}
-
 // 吸血掌觸發：角色身上綠色光暈＋回血飄字，與單純拾取內力珠的金色文字明確區隔
 function spawnVampireEffect(p, healAmount) {
   p.vampireFxUntil = performance.now() + VAMPIRE_FX_DURATION;
@@ -1027,27 +1007,15 @@ function updateShockwaves(dt) {
   }
   state.shockwaves = state.shockwaves.filter((s) => s.life > 0);
 }
-
-function drawShockwaves() {
-  for (const s of state.shockwaves) {
-    const alpha = Math.max(0, s.life / s.maxLife);
-    const color = s.color || "#3ad6ff";
-    ctx.save();
-    ctx.globalAlpha = alpha * 0.8;
-    ctx.strokeStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 20;
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
 // ===== 技能特效圖層（普攻／必殺美術特效，疊加於玩家位置） =====
 function spawnFxOverlay(x, y, imgKey, fromScale, toScale, durationMs, rotateDeg) {
   if (!imgKey) return;
+  // 霜凜特效圖尺寸不同，統一在此收斂縮放/時長參數（原 hotfix 覆寫邏輯併回本體）
+  if (imgKey === "bingyun_fx_basic") {
+    fromScale = 0.18; toScale = 0.75; durationMs = 320; rotateDeg = 0;
+  } else if (imgKey === "bingyun_fx_ult") {
+    fromScale = 0.35; toScale = 1.25; durationMs = 1050; rotateDeg = 0;
+  }
   state.fxOverlays.push({
     x,
     y,
@@ -1066,27 +1034,6 @@ function updateFxOverlays(dt) {
   }
   state.fxOverlays = state.fxOverlays.filter((o) => o.elapsed < o.duration);
 }
-
-function drawFxOverlays() {
-  for (const o of state.fxOverlays) {
-    const img = assetImages[o.imgKey];
-    if (!img) continue;
-    const t = Math.min(1, o.elapsed / o.duration);
-    const scale = o.fromScale + (o.toScale - o.fromScale) * t;
-    const alpha = Math.sin(t * Math.PI); // 0 -> 1 -> 0
-    const angle = o.rotateDeg ? ((t - 0.5) * 2 * o.rotateDeg * Math.PI) / 180 : 0;
-    const w = img.width * scale;
-    const h = img.height * scale;
-    ctx.save();
-    ctx.translate(o.x, o.y);
-    ctx.rotate(angle);
-    ctx.globalAlpha = alpha;
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
-    ctx.restore();
-  }
-}
-
 // ===== 音效系統 =====
 let audioCtx = null;
 
@@ -1106,14 +1053,31 @@ function unlockAudio() {
   startBgm();
 }
 
-// ===== 背景音樂（Web Audio 排程迴圈，獨立音量、與 SFX 共用 AudioContext） =====
+// ===== 背景音樂（Web Audio 多聲部合成：旋律／低音／鼓組／和弦 pad，關卡強度分層） =====
 const BGM_NORMAL_VOLUME = 0.5;
 const BGM_GAMEOVER_VOLUME = 0.2;
 const BGM_TEMPO = 96; // BPM
-const BGM_TEMPO_BOSS = 116; // BPM，boss 戰更緊湊
-const BGM_SCALE = [196.0, 220.0, 246.94, 293.66, 329.63]; // G 五聲音階
+const BGM_TEMPO_BOSS = 118; // BPM，boss 戰更緊湊
 const BGM_PATTERN = [0, 2, 1, 3, 2, 4, 3, 1];
 const BGM_PATTERN_BOSS = [4, 3, 4, 1, 3, 0, 3, 2, 4, 2, 1, 3]; // boss 戰更密集緊張的音型
+
+// 三場景各自的五聲調式與鼓組密度：沙漠 G 徵、竹林 D 羽、遺跡 A 商
+const BGM_MODES = [
+  { scale: [196.0, 220.0, 246.94, 293.66, 329.63], drumDensity: 1.0 },
+  { scale: [146.83, 174.61, 196.0, 220.0, 261.63], drumDensity: 0.7 },
+  { scale: [220.0, 246.94, 293.66, 329.63, 392.0], drumDensity: 1.2 },
+];
+
+function getBgmMode() {
+  return BGM_MODES[STAGE_SCENE_INDEX[state.stage] || 0];
+}
+
+// 關卡強度分層：1-3 關只有旋律+pad，4-7 關進低音+輕鼓，8 關以上全聲部
+function getBgmIntensity() {
+  if (state.stage >= 7) return 3;
+  if (state.stage >= 3) return 2;
+  return 1;
+}
 
 function getBgmStepSec() {
   const tempo = state.bossActive ? BGM_TEMPO_BOSS : BGM_TEMPO;
@@ -1148,6 +1112,53 @@ function setBgmVolume(vol) {
   gain.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.6);
 }
 
+// 排程用聲部 helper：指定時間點的單音（給 BGM，走 bgmGain）
+function bgmTone(time, { freq, dur, type = "sine", peak = 0.2, attack = 0.006, freqEnd }) {
+  const ctx = getAudioCtx();
+  const gain = ensureBgmGain();
+  if (!ctx || !gain) return;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, time);
+  if (freqEnd) osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), time + dur);
+  g.gain.setValueAtTime(0.001, time);
+  g.gain.linearRampToValueAtTime(peak, time + attack);
+  g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+  osc.connect(g);
+  g.connect(gain);
+  osc.start(time);
+  osc.stop(time + dur + 0.05);
+}
+
+// 排程用噪音（鼓組：hat／snare），可調濾波特性以模擬不同鼓件
+function bgmNoise(time, { dur, peak = 0.15, filterType, filterFreq }) {
+  const ctx = getAudioCtx();
+  const gain = ensureBgmGain();
+  if (!ctx || !gain) return;
+  const frameCount = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buffer = ctx.createBuffer(1, frameCount, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < frameCount; i++) data[i] = Math.random() * 2 - 1;
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(peak, time);
+  g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+  let node = noise;
+  if (filterType) {
+    const filter = ctx.createBiquadFilter();
+    filter.type = filterType;
+    filter.frequency.value = filterFreq || 4000;
+    noise.connect(filter);
+    node = filter;
+  }
+  node.connect(g);
+  g.connect(gain);
+  noise.start(time);
+  noise.stop(time + dur + 0.02);
+}
+
 function scheduleBgmStep(time) {
   const ctx = getAudioCtx();
   const gain = ensureBgmGain();
@@ -1155,48 +1166,63 @@ function scheduleBgmStep(time) {
 
   const stepSec = getBgmStepSec();
   const pattern = getBgmPattern();
+  const mode = getBgmMode();
+  const intensity = getBgmIntensity();
+  const boss = state.bossActive;
+  // Boss 期間整體半音下移，營造壓迫感
+  const pitchShift = boss ? 0.9439 : 1;
+  const scale = mode.scale;
+  const step = bgmStepIndex;
 
-  if (bgmStepIndex % 4 === 0) {
-    const drone = ctx.createOscillator();
-    const droneGain = ctx.createGain();
-    drone.type = "sine";
-    drone.frequency.value = BGM_SCALE[0] / 2;
-    droneGain.gain.setValueAtTime(0.001, time);
-    droneGain.gain.linearRampToValueAtTime(0.5, time + 0.3);
-    droneGain.gain.exponentialRampToValueAtTime(0.001, time + stepSec * 4);
-    drone.connect(droneGain);
-    droneGain.connect(gain);
-    drone.start(time);
-    drone.stop(time + stepSec * 4 + 0.05);
-  }
-
-  const note = pattern[bgmStepIndex % pattern.length];
-  const freq = BGM_SCALE[note];
+  // --- 聲部 1：主旋律（撥弦，古琴/琵琶式包絡：快起音、兩段衰減）---
+  const note = pattern[step % pattern.length];
+  const freq = scale[note] * pitchShift;
   const osc = ctx.createOscillator();
   const oscGain = ctx.createGain();
   osc.type = "triangle";
   osc.frequency.value = freq;
-  // 撥弦類樂器（古琴/琵琶）的典型包絡：極快起音、快速初段衰減、再接一段較慢的尾音，
-  // 取代原本單一線性起音＋單段衰減，讓音色更貼近「彈撥」而非合成器持續音。
   oscGain.gain.setValueAtTime(0.001, time);
-  oscGain.gain.linearRampToValueAtTime(0.42, time + 0.006);
-  oscGain.gain.exponentialRampToValueAtTime(0.09, time + stepSec * 0.35);
+  oscGain.gain.linearRampToValueAtTime(0.4, time + 0.006);
+  oscGain.gain.exponentialRampToValueAtTime(0.085, time + stepSec * 0.35);
   oscGain.gain.exponentialRampToValueAtTime(0.001, time + stepSec * 0.95);
   osc.connect(oscGain);
   oscGain.connect(gain);
   osc.start(time);
-  // 撥弦起音的高頻「指尖」噪音瞬態：極短促，疊加在主音頭部增加顆粒感
-  const pluckClick = ctx.createOscillator();
-  const pluckGain = ctx.createGain();
-  pluckClick.type = "triangle";
-  pluckClick.frequency.value = freq * 2.5;
-  pluckGain.gain.setValueAtTime(0.12, time);
-  pluckGain.gain.exponentialRampToValueAtTime(0.001, time + 0.03);
-  pluckClick.connect(pluckGain);
-  pluckGain.connect(gain);
-  pluckClick.start(time);
-  pluckClick.stop(time + 0.04);
   osc.stop(time + stepSec);
+  // 撥弦指尖瞬態
+  bgmTone(time, { freq: freq * 2.5, dur: 0.03, type: "triangle", peak: 0.11, attack: 0.001 });
+
+  // --- 聲部 2：和弦 pad（每 8 步一次，根音＋五度，慢起音鋸齒+暗色音量）---
+  if (step % 8 === 0) {
+    bgmTone(time, { freq: scale[0] * pitchShift, dur: stepSec * 8, type: "sawtooth", peak: 0.05, attack: stepSec * 2 });
+    bgmTone(time, { freq: scale[3] * pitchShift, dur: stepSec * 8, type: "sawtooth", peak: 0.035, attack: stepSec * 2.5 });
+  }
+
+  // --- 聲部 3：低音（強度 2 以上，每 2 步根音/五度交替的沉底正弦）---
+  if (intensity >= 2 && step % 2 === 0) {
+    const bassNote = step % 8 < 4 ? scale[0] / 2 : scale[3] / 4;
+    bgmTone(time, { freq: bassNote * pitchShift, dur: stepSec * 1.8, type: "sine", peak: 0.3, attack: 0.01 });
+  } else if (step % 4 === 0) {
+    // 低強度時保留原本的 drone 底
+    bgmTone(time, { freq: (scale[0] / 2) * pitchShift, dur: stepSec * 4, type: "sine", peak: 0.28, attack: 0.3 });
+  }
+
+  // --- 聲部 4：鼓組（強度 2 起輕鼓，強度 3 全開；Boss 期間密度加倍）---
+  const density = mode.drumDensity * (boss ? 2 : 1);
+  if (intensity >= 2) {
+    if (step % 4 === 0) {
+      // kick：低頻掃頻正弦
+      bgmTone(time, { freq: 130, freqEnd: 38, dur: 0.13, type: "sine", peak: 0.4, attack: 0.002 });
+    }
+    if ((step % 2 === 1 && density >= 1) || (boss && density >= 1.4)) {
+      // hi-hat：高通短噪
+      bgmNoise(time, { dur: 0.035, peak: 0.09 * density, filterType: "highpass", filterFreq: 6000 });
+    }
+    if (intensity >= 3 && step % 8 === 4) {
+      // snare：帶通中頻噪
+      bgmNoise(time, { dur: 0.1, peak: 0.16, filterType: "bandpass", filterFreq: 1800 });
+    }
+  }
 
   bgmStepIndex += 1;
   return stepSec;
@@ -1328,11 +1354,26 @@ function playHitSound() {
   playNoiseBurst({ duration: 0.05, peak: 0.22 });
 }
 
-function playKillSound() {
-  // 擊殺反饋：改用低頻下滑音（沉悶終結感）＋短促噪音，與其餘音效同屬一個聲音家族，
-  // 取代原本格格不入的單一鋸齒波高頻電子音。
-  playTone({ freq: 240, freqEnd: 60, duration: 0.2, type: "triangle", peak: 0.32 });
+function playKillSound(streak = 0) {
+  // 擊殺反饋：低頻下滑音＋短促噪音；連殺時音調沿五聲音階逐級上升，營造 combo 爽感
+  const pitchMult = 1 + Math.min(streak, 8) * 0.09;
+  playTone({ freq: 240 * pitchMult, freqEnd: 60 * pitchMult, duration: 0.2, type: "triangle", peak: 0.32 });
   playNoiseBurst({ duration: 0.06, peak: 0.24 });
+}
+
+function playBossDeathSound() {
+  // Boss 死亡：長尾雙層爆音＋噪音殘響，明確標記戰鬥節點結束
+  playTone({ freq: 60, freqEnd: 18, duration: 0.9, type: "sine", peak: 0.6 });
+  playTone({ freq: 180, freqEnd: 40, duration: 0.5, type: "triangle", peak: 0.35 });
+  playNoiseBurst({ duration: 0.4, peak: 0.4 });
+}
+
+function playEvolveSound() {
+  // 技能進化：上行五聲琶音＋亮音收尾，與一般升級音明確區隔
+  const notes = [294, 392, 494, 659, 784, 988];
+  notes.forEach((freq, i) => {
+    setTimeout(() => playTone({ freq, duration: 0.22, type: "triangle", peak: 0.24 }), i * 80);
+  });
 }
 
 function playHurtSound() {
@@ -1387,6 +1428,9 @@ function updateUpgradeQueue() {
   if (state.upgradeChoices.length === 0 && state.pendingLevelUps > 0) {
     state.pendingLevelUps -= 1;
     state.upgradeChoices = sampleUpgrades(3);
+    // 技能進化：條件達成時，金色進化卡取代第一張普通卡
+    const evolution = getAvailableEvolution();
+    if (evolution) state.upgradeChoices[0] = evolution;
     renderUpgradeCards();
   }
 }
@@ -1396,8 +1440,9 @@ function renderUpgradeCards() {
   container.innerHTML = "";
   state.upgradeChoices.forEach((choice, i) => {
     const card = document.createElement("button");
-    card.className = "upgrade-card";
-    card.innerHTML = `<span class="upgrade-key">${i + 1}</span><span class="upgrade-text"><span class="upgrade-name">${choice.name}</span><span class="upgrade-stat">${choice.stat}</span></span>`;
+    card.className = choice.isEvolution ? "upgrade-card evolution-card" : "upgrade-card";
+    const evoTag = choice.isEvolution ? `<span class="evolution-tag">進化</span>` : "";
+    card.innerHTML = `<span class="upgrade-key">${i + 1}</span><span class="upgrade-text"><span class="upgrade-name">${choice.name}${evoTag}</span><span class="upgrade-stat">${choice.stat}</span></span>`;
     card.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       selectUpgrade(i);
@@ -1412,6 +1457,10 @@ function selectUpgrade(i) {
   const choice = state.upgradeChoices[i];
   if (!choice) return;
   choice.apply(state.player);
+  // 記錄一般升級卡的選取次數，供技能進化條件判定
+  if (choice.id && !choice.isEvolution && !String(choice.id).startsWith("chest_")) {
+    state.player.cardCounts[choice.id] = (state.player.cardCounts[choice.id] || 0) + 1;
+  }
   state.upgradeChoices = [];
   const container = document.getElementById("level-up-cards");
   container.innerHTML = "";
@@ -1777,10 +1826,18 @@ function tryVampireHeal() {
   const p = state.player;
   const skill = p.skills.vampire;
   if (!skill.unlocked || skill.level <= 0) return;
-  if (Math.random() < skill.level * VAMPIRE_CHANCE_PER_LEVEL) {
+  // 噬血真經進化：觸發率×1.5、溢出治療轉為一層護盾
+  const chanceMult = p.vampireEvolved ? 1.5 : 1;
+  if (Math.random() < skill.level * VAMPIRE_CHANCE_PER_LEVEL * chanceMult) {
     const healAmount = VAMPIRE_HEAL_BASE + skill.level * VAMPIRE_HEAL_PER_LEVEL;
     const healed = Math.min(p.maxHp - p.hp, healAmount);
-    if (healed <= 0) return;
+    if (healed <= 0) {
+      if (p.vampireEvolved && !p.barrierCharge) {
+        p.barrierCharge = true;
+        spawnPickupText(p.x, p.y - p.h / 2 - 10, "血盾!", true);
+      }
+      return;
+    }
     p.hp += healed;
     spawnVampireEffect(p, healed);
   }
@@ -1857,6 +1914,7 @@ function tryPalmAttack() {
 
   const character = p.character || CHARACTERS[0];
   spawnFxOverlay(p.x, p.y, character.fxUltKey, 0.5, 1.5, 800, 15);
+  fxLight(p.x, p.y, character.rimColor, 3.2, 620, 520);
   clearNearbyEnemyProjectiles(p, p.palmRadius);
 
   const ability = p.character && p.character.palmAbility;
@@ -1991,7 +2049,9 @@ function updateOrbiters(dt) {
     state.orbiters = [];
     return;
   }
-  const count = getSkillEffect("orbit", "count");
+  // 罡風輪進化：刀刃數×2、環繞半徑+40%
+  const count = getSkillEffect("orbit", "count") * (p.orbitEvolved ? 2 : 1);
+  const orbitRadius = ORBIT_RADIUS * (p.orbitEvolved ? 1.4 : 1);
   if (state.orbiters.length !== count) {
     state.orbiters = Array.from({ length: count }, (_, i) => ({
       angleOffset: (Math.PI * 2 * i) / count,
@@ -2001,8 +2061,8 @@ function updateOrbiters(dt) {
   }
   p.orbitAngle += getSkillEffect("orbit", "spin") * dt;
   for (const blade of state.orbiters) {
-    blade.x = p.x + Math.cos(p.orbitAngle + blade.angleOffset) * ORBIT_RADIUS;
-    blade.y = p.y + Math.sin(p.orbitAngle + blade.angleOffset) * ORBIT_RADIUS;
+    blade.x = p.x + Math.cos(p.orbitAngle + blade.angleOffset) * orbitRadius;
+    blade.y = p.y + Math.sin(p.orbitAngle + blade.angleOffset) * orbitRadius;
   }
 
   const damage = getSkillEffect("orbit", "damage");
@@ -2021,21 +2081,6 @@ function updateOrbiters(dt) {
     }
   }
 }
-
-function drawOrbiters() {
-  for (const blade of state.orbiters) {
-    ctx.save();
-    ctx.translate(blade.x, blade.y);
-    ctx.fillStyle = "#ffd84d";
-    ctx.shadowColor = "#ff8a3a";
-    ctx.shadowBlur = 14;
-    ctx.beginPath();
-    ctx.arc(0, 0, ORBIT_BLADE_RADIUS, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
 function updateThrowSkill(dt) {
   const p = state.player;
   if (!p.skills.throw.unlocked) return;
@@ -2049,8 +2094,291 @@ function updateThrowSkill(dt) {
   }
   p.throwTimer = getSkillEffect("throw", "interval");
   const damage = getSkillEffect("throw", "damage");
-  fireHomingVolley(p, target, 1, damage, THROW_SPEED, THROW_TURN_RATE, THROW_RADIUS, "throw");
-  state.projectiles[state.projectiles.length - 1].pierceRemaining += THROW_BASE_PIERCE;
+  // 追魂梭進化：一擲三梭、無限貫穿
+  const throwCount = p.throwEvolved ? 3 : 1;
+  fireHomingVolley(p, target, throwCount, damage, THROW_SPEED, THROW_TURN_RATE, THROW_RADIUS, "throw");
+  for (let i = 1; i <= throwCount; i++) {
+    const proj = state.projectiles[state.projectiles.length - i];
+    if (proj) proj.pierceRemaining += p.throwEvolved ? 999 : THROW_BASE_PIERCE;
+  }
+}
+
+// ===== P17 新系統：分裂菁英／Boss 寶箱／勝利結算／技能進化／永久成長／本地紀錄 =====
+
+// 分裂菁英死亡時產生 2 隻縮小版小怪
+function spawnSplitChildren(from, count) {
+  const typeDef = ENEMY_TYPE_DEFS[from.baseType] || ENEMY_TYPE_DEFS.drifter;
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    state.enemies.push({
+      x: from.x + Math.cos(ang) * 24,
+      y: from.y + Math.sin(ang) * 24,
+      type: "normal",
+      baseType: from.baseType,
+      behavior: typeDef.behavior === "kiter" ? "chase" : typeDef.behavior,
+      isBrute: false,
+      eliteType: null,
+      radius: Math.max(9, Math.round(from.radius * 0.55)),
+      hp: Math.max(8, Math.round(from.maxHp * 0.25)),
+      maxHp: Math.max(8, Math.round(from.maxHp * 0.25)),
+      speed: from.speed * 1.25,
+      touchDamage: Math.max(3, Math.round(from.touchDamage * 0.5)),
+      killScore: Math.round(from.killScore * 0.3),
+      killXp: Math.max(1, Math.round(from.killXp * 0.3)),
+      hurtUntil: 0,
+      particleTimer: 0,
+      knockVx: 0,
+      knockVy: 0,
+      knockUntil: 0,
+      zigzagPhase: Math.random() * Math.PI * 2,
+      ambushTriggered: true,
+      ambushWarning: false,
+      ambushWarningTimer: 0,
+      fireTimer: 0,
+      fireIntervalMs: 0,
+    });
+  }
+}
+
+// Boss 寶箱：擊敗 Boss 掉落，走過去拾取後暫停並三選一
+function spawnBossChest(x, y) {
+  state.chests.push({ x, y, bobPhase: Math.random() * Math.PI * 2 });
+}
+
+function buildChestChoices() {
+  const p = state.player;
+  const choices = [
+    {
+      id: "chest_currency",
+      name: "內力灌頂",
+      stat: "內力珠 +80",
+      apply(pl) {
+        pl.currency += 80;
+        spawnPickupText(pl.x, pl.y - 30, 80);
+      },
+    },
+    {
+      id: "chest_heal",
+      name: "療傷聖藥",
+      stat: "氣血全滿＋獲得一層護盾",
+      apply(pl) {
+        pl.hp = pl.maxHp;
+        pl.barrierCharge = true;
+        spawnHealText(pl.x, pl.y - 30, "全滿");
+      },
+    },
+  ];
+  // 武學精進：隨機一個可升級技能 +1（未解鎖則解鎖）
+  const upgradable = SKILL_DEFS.filter((d) => d.purchasable && p.skills[d.id].level < d.maxLevel);
+  if (upgradable.length > 0) {
+    const pick = upgradable[Math.floor(Math.random() * upgradable.length)];
+    choices.push({
+      id: "chest_skill",
+      name: "武學精進",
+      stat: `${pick.name} 等級 +1`,
+      apply(pl) {
+        pl.skills[pick.id].level += 1;
+        pl.skills[pick.id].unlocked = true;
+        if (pick.id === "barrier") pl.barrierTimer = getSkillEffect("barrier", "interval");
+      },
+    });
+  }
+  return choices;
+}
+
+function updateChests() {
+  const p = state.player;
+  state.chests = state.chests.filter((chest) => {
+    chest.bobPhase += 0.06;
+    if (distance(p, chest) < 30 + p.radius) {
+      playPickupSound();
+      state.upgradeChoices = buildChestChoices();
+      state.upgradeChoices.isChest = true;
+      renderUpgradeCards();
+      return false;
+    }
+    return true;
+  });
+}
+
+// ===== 技能進化（滿級技能＋指定升級卡數量 → 升級卡池出現金色進化卡） =====
+const EVOLUTION_DEFS = [
+  {
+    id: "evo_orbit",
+    name: "罡風輪",
+    stat: "進化：刀刃×2、範圍+40%",
+    skill: "orbit",
+    cardId: "dmg",
+    cardNeed: 2,
+    flag: "orbitEvolved",
+  },
+  {
+    id: "evo_throw",
+    name: "追魂梭",
+    stat: "進化：一擲三梭、無限貫穿",
+    skill: "throw",
+    cardId: "pierce",
+    cardNeed: 1,
+    flag: "throwEvolved",
+  },
+  {
+    id: "evo_vampire",
+    name: "噬血真經",
+    stat: "進化：吸血率×1.5、溢出治療轉護盾",
+    skill: "vampire",
+    cardId: "hp",
+    cardNeed: 1,
+    flag: "vampireEvolved",
+  },
+];
+
+function getAvailableEvolution() {
+  const p = state.player;
+  for (const evo of EVOLUTION_DEFS) {
+    if (p[evo.flag]) continue;
+    const def = getSkillDef(evo.skill);
+    if (p.skills[evo.skill].level < def.maxLevel) continue;
+    if ((p.cardCounts[evo.cardId] || 0) < evo.cardNeed) continue;
+    return {
+      id: evo.id,
+      name: evo.name,
+      stat: evo.stat,
+      isEvolution: true,
+      apply(pl) {
+        pl[evo.flag] = true;
+        playEvolveSound();
+        spawnShockwave(pl.x, pl.y, 130, "#ffd84d");
+        spawnExplosion(pl.x, pl.y, "#ffd84d", 30);
+        fxLight(pl.x, pl.y, "#ffd84d", 3, 900, 520);
+      },
+    };
+  }
+  return null;
+}
+
+// ===== 勝利結算（擊敗最終 Boss） =====
+function triggerVictory() {
+  state.victoryShown = true;
+  state.victoryPause = true;
+  const mins = Math.floor(state.elapsed / 60);
+  const secs = Math.floor(state.elapsed % 60);
+  const gained = Math.floor(state.player.currency * 0.5);
+  addXiuwei(gained);
+  updateRecords();
+  document.getElementById("victory-stats").textContent =
+    `分數 ${state.score}｜擊殺 ${state.kills}｜存活 ${mins}:${String(secs).padStart(2, "0")}`;
+  document.getElementById("victory-meta-line").textContent = `獲得修為 +${gained}（可在選角畫面修煉）`;
+  document.getElementById("victory-screen").classList.remove("hidden");
+  spawnExplosion(state.player.x, state.player.y, "#ffd84d", 40);
+  playLevelUpSound();
+}
+
+// ===== 永久成長（修為，localStorage 跨局保存） =====
+const META_DEFS = [
+  { id: "atk", name: "拳勁修為", desc: "初始攻擊 +2%/級", maxLevel: 5, baseCost: 40 },
+  { id: "hp", name: "內息修為", desc: "初始體力 +10/級", maxLevel: 5, baseCost: 40 },
+  { id: "speed", name: "身法修為", desc: "移速 +1.5%/級", maxLevel: 5, baseCost: 40 },
+];
+
+function getXiuwei() {
+  return parseInt(localStorage.getItem("meta_xiuwei") || "0", 10);
+}
+
+function addXiuwei(amount) {
+  localStorage.setItem("meta_xiuwei", String(getXiuwei() + amount));
+}
+
+function getMetaLevels() {
+  try {
+    return JSON.parse(localStorage.getItem("meta_levels") || "{}");
+  } catch (e) {
+    return {};
+  }
+}
+
+function getMetaCost(def, level) {
+  return Math.round(def.baseCost * Math.pow(1.6, level));
+}
+
+function applyMetaToPlayer(p) {
+  const levels = getMetaLevels();
+  const atkLv = levels.atk || 0;
+  const hpLv = levels.hp || 0;
+  const speedLv = levels.speed || 0;
+  if (atkLv > 0) {
+    p.atkDamage = Math.round(p.atkDamage * (1 + atkLv * 0.02));
+    p.atkMult *= 1 + atkLv * 0.02;
+  }
+  if (hpLv > 0) {
+    p.maxHp += hpLv * 10;
+    p.hp = p.maxHp;
+  }
+  if (speedLv > 0) {
+    p.moveSpeedMult *= 1 + speedLv * 0.015;
+    p.speed = PLAYER_SPEED * p.moveSpeedMult;
+  }
+}
+
+function tryMetaUpgrade(defId) {
+  const def = META_DEFS.find((d) => d.id === defId);
+  if (!def) return;
+  const levels = getMetaLevels();
+  const level = levels[defId] || 0;
+  if (level >= def.maxLevel) return;
+  const cost = getMetaCost(def, level);
+  if (getXiuwei() < cost) return;
+  addXiuwei(-cost);
+  levels[defId] = level + 1;
+  localStorage.setItem("meta_levels", JSON.stringify(levels));
+  playLevelUpSound();
+  renderMetaPanel();
+}
+
+function renderMetaPanel() {
+  const list = document.getElementById("meta-list");
+  if (!list) return;
+  document.getElementById("meta-currency").textContent = `修為: ${getXiuwei()}`;
+  list.innerHTML = "";
+  const levels = getMetaLevels();
+  for (const def of META_DEFS) {
+    const level = levels[def.id] || 0;
+    const row = document.createElement("div");
+    row.className = "meta-row";
+    const maxed = level >= def.maxLevel;
+    const cost = getMetaCost(def, level);
+    row.innerHTML = `<span class="meta-name">${def.name} Lv.${level}/${def.maxLevel}</span><span class="meta-desc">${def.desc}</span>`;
+    const btn = document.createElement("button");
+    btn.className = "meta-buy-btn";
+    btn.textContent = maxed ? "已圓滿" : `修煉 ${cost}`;
+    btn.disabled = maxed || getXiuwei() < cost;
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      tryMetaUpgrade(def.id);
+    });
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+// ===== 本地最佳紀錄 =====
+function updateRecords() {
+  const bestScore = parseInt(localStorage.getItem("best_score") || "0", 10);
+  const bestStage = parseInt(localStorage.getItem("best_stage") || "0", 10);
+  const bestTime = parseInt(localStorage.getItem("best_time") || "0", 10);
+  if (state.score > bestScore) localStorage.setItem("best_score", String(state.score));
+  if (state.stage + 1 > bestStage) localStorage.setItem("best_stage", String(state.stage + 1));
+  if (Math.floor(state.elapsed) > bestTime) localStorage.setItem("best_time", String(Math.floor(state.elapsed)));
+}
+
+function formatRecordsLine() {
+  const bestScore = parseInt(localStorage.getItem("best_score") || "0", 10);
+  const bestStage = parseInt(localStorage.getItem("best_stage") || "0", 10);
+  const bestTime = parseInt(localStorage.getItem("best_time") || "0", 10);
+  if (bestScore === 0 && bestStage === 0) return "";
+  const mins = Math.floor(bestTime / 60);
+  const secs = bestTime % 60;
+  return `最佳紀錄：分數 ${bestScore}｜關卡 ${bestStage}｜存活 ${mins}:${String(secs).padStart(2, "0")}`;
 }
 
 // ===== 敵人邏輯 =====
@@ -2096,15 +2424,19 @@ function spawnEnemy() {
   const hpScale = getEnemyHpScaleFactor();
 
   const isBrute = Math.random() < stageConfig.bruteChance;
+  const eliteType =
+    !isBrute && state.stage >= ELITE_START_STAGE && Math.random() < ELITE_CHANCE
+      ? ELITE_TYPES[Math.floor(Math.random() * ELITE_TYPES.length)]
+      : null;
   const baseHp = ENEMY_MAX_HP * stageConfig.hpMult * typeDef.hpMult * hpScale;
-  const hp = Math.round(isBrute ? baseHp * ENEMY_BRUTE_HP_MULT : baseHp);
-  const radius = Math.round(ENEMY_RADIUS * typeDef.radiusMult * (isBrute ? ENEMY_BRUTE_RADIUS_MULT : 1));
-  const speed = ENEMY_SPEED * typeDef.speedMult * (isBrute ? ENEMY_BRUTE_SPEED_MULT : 1);
+  const hp = Math.round(baseHp * (isBrute ? ENEMY_BRUTE_HP_MULT : 1) * (eliteType ? ELITE_HP_MULT : 1));
+  const radius = Math.round(ENEMY_RADIUS * typeDef.radiusMult * (isBrute ? ENEMY_BRUTE_RADIUS_MULT : 1) * (eliteType ? 1.15 : 1));
+  const speed = ENEMY_SPEED * typeDef.speedMult * (isBrute ? ENEMY_BRUTE_SPEED_MULT : 1) * (eliteType === "swift" ? 1.6 : 1);
   const touchDamage = Math.round(
     ENEMY_TOUCH_DAMAGE * typeDef.touchMult * (isBrute ? ENEMY_BRUTE_TOUCH_MULT : 1) * (1 + (powerScale - 1) * 0.4)
   );
-  const killScore = Math.round(KILL_SCORE * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1));
-  const killXp = Math.round(KILL_XP * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1));
+  const killScore = Math.round(KILL_SCORE * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1) * (eliteType ? ELITE_SCORE_MULT : 1));
+  const killXp = Math.round(KILL_XP * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1) * (eliteType ? 2 : 1));
 
   state.enemies.push({
     x,
@@ -2113,6 +2445,7 @@ function spawnEnemy() {
     baseType,
     behavior: typeDef.behavior,
     isBrute,
+    eliteType,
     radius,
     hp,
     maxHp: hp,
@@ -2145,11 +2478,13 @@ function getEnemyFireInterval(baseType, typeDef) {
   return typeDef.fireIntervalMs;
 }
 
-function spawnBoss(stageIndex) {
+function spawnBoss(stageIndex, isFinal = false) {
   const { x, y } = pickSpawnEdgePoint(60);
   const stageConfig = STAGE_CONFIGS[stageIndex];
   const hpScale = getEnemyHpScaleFactor();
-  const hp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult * BOSS_HP_MULT * hpScale);
+  // 最終 Boss：血量 2 倍、體型放大、攻擊間隔縮短並具備雙攻擊模式（衝擊波＋彈幕）
+  const hpMultFinal = isFinal ? 2 : 1;
+  const hp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult * BOSS_HP_MULT * hpScale * hpMultFinal);
 
   state.enemies.push({
     x,
@@ -2158,21 +2493,28 @@ function spawnBoss(stageIndex) {
     baseType: "boss",
     behavior: "chase",
     isBrute: false,
-    radius: BOSS_RADIUS,
+    isFinalBoss: isFinal,
+    radius: isFinal ? Math.round(BOSS_RADIUS * 1.5) : BOSS_RADIUS,
     hp,
     maxHp: hp,
-    speed: ENEMY_SPEED * 0.6,
-    touchDamage: Math.round(ENEMY_TOUCH_DAMAGE * BOSS_TOUCH_MULT),
-    killScore: KILL_SCORE * BOSS_SCORE_MULT,
+    speed: ENEMY_SPEED * (isFinal ? 0.5 : 0.6),
+    touchDamage: Math.round(ENEMY_TOUCH_DAMAGE * BOSS_TOUCH_MULT * (isFinal ? 1.3 : 1)),
+    killScore: KILL_SCORE * BOSS_SCORE_MULT * (isFinal ? 4 : 1),
     killXp: KILL_XP * BOSS_XP_MULT,
     hurtUntil: 0,
     particleTimer: 0,
     knockVx: 0,
     knockVy: 0,
     knockUntil: 0,
-    attackTimer: BOSS_ATTACK_INTERVAL_MS,
+    attackTimer: isFinal ? Math.round(BOSS_ATTACK_INTERVAL_MS * 0.7) : BOSS_ATTACK_INTERVAL_MS,
+    volleyTimer: isFinal ? 2200 : 0,
   });
+  if (isFinal) {
+    state.finalBossSpawned = true;
+    showStageBanner("魔王現世", "擊敗它，終結這場浩劫");
+  }
   state.bossActive = true;
+  setBossTint(true);
   triggerShake(0.3, 12);
 }
 
@@ -2181,20 +2523,58 @@ function getEnemySpawnInterval() {
   return Math.max(MIN_SPAWN_INTERVAL_MS, Math.round(base / getPowerScaleFactor()));
 }
 
+// 關卡進場橫幅：大字標題＋副標（新要素提示），2.2 秒後淡出（CSS 動畫）
+function showStageBanner(title, sub) {
+  const banner = document.getElementById("stage-banner");
+  document.getElementById("stage-banner-title").textContent = title;
+  document.getElementById("stage-banner-sub").textContent = sub || "";
+  banner.classList.remove("hidden");
+  banner.classList.remove("show");
+  void banner.offsetWidth; // 重觸發 CSS 動畫
+  banner.classList.add("show");
+  state.stageBannerUntil = performance.now() + 2400;
+  setTimeout(() => {
+    if (performance.now() >= state.stageBannerUntil - 50) banner.classList.add("hidden");
+  }, 2500);
+}
+
+function getStageSubtitle(stageIdx) {
+  const introduced = STAGE_NORMAL_TYPE_POOL[stageIdx].find((t) => TYPE_FIRST_STAGE[t] === stageIdx);
+  const names = { skitter: "疾行魔影現身", lurker: "伏擊妖物潛藏", volley: "遠射邪祟來襲", juggernaut: "重甲巨魔壓境" };
+  if (introduced && names[introduced]) return names[introduced];
+  if (stageIdx === ELITE_START_STAGE) return "菁英強敵開始出沒";
+  if (stageIdx === STAGE_CONFIGS.length - 1) return "最終決戰";
+  return "";
+}
+
 function updateStage(dt) {
   const nextStage = Math.min(
     Math.floor(state.elapsed / STAGE_DURATION_SEC),
     STAGE_CONFIGS.length - 1
   );
   if (nextStage !== state.stage) {
+    const prevSceneIdx = STAGE_SCENE_INDEX[state.stage] || 0;
+    const nextSceneIdx = STAGE_SCENE_INDEX[nextStage] || 0;
     state.stage = nextStage;
-    console.log(`[stage] entering stage ${nextStage + 1}`);
     triggerShake(0.15, 6);
+
+    if (nextSceneIdx !== prevSceneIdx) {
+      // 跨場景：轉場演出（漸黑→切景→漸亮），並在切換點顯示場景名＋關卡標題
+      sceneTransition(nextSceneIdx, () => {
+        showStageBanner(`${SCENES[nextSceneIdx].name}・第 ${nextStage + 1} 關`, getStageSubtitle(nextStage));
+      });
+    } else {
+      showStageBanner(`第 ${nextStage + 1} 關`, getStageSubtitle(nextStage));
+    }
+
     if (nextStage >= 1 && !state.bossActive) {
       const introducesNewType = STAGE_NORMAL_TYPE_POOL[nextStage].some(
         (t) => TYPE_FIRST_STAGE[t] === nextStage
       );
-      if (introducesNewType) {
+      if (nextStage === STAGE_CONFIGS.length - 1) {
+        // 最終關：延後數秒生成最終 Boss，讓轉場先演完
+        state.bossSpawnAt = state.elapsed + BOSS_INTRO_DELAY_SEC;
+      } else if (introducesNewType) {
         // 新怪種剛登場，延後 boss 生成，讓玩家先適應新怪
         state.bossSpawnAt = state.elapsed + BOSS_INTRO_DELAY_SEC;
       } else {
@@ -2206,7 +2586,8 @@ function updateStage(dt) {
   }
 
   if (state.bossSpawnAt > 0 && !state.bossActive && state.elapsed >= state.bossSpawnAt) {
-    spawnBoss(state.stage);
+    const isFinalStage = state.stage === STAGE_CONFIGS.length - 1 && !state.finalBossSpawned && !state.victoryShown;
+    spawnBoss(state.stage, isFinalStage);
     state.bossCyclesSpawned += 1;
     state.bossRepeatTimer = 0;
     state.bossSpawnAt = 0;
@@ -2216,7 +2597,8 @@ function updateStage(dt) {
   if (state.stage === STAGE_CONFIGS.length - 1 && !state.bossActive) {
     state.bossRepeatTimer += dt;
     if (state.bossRepeatTimer >= BOSS_REPEAT_INTERVAL_SEC) {
-      spawnBoss(state.stage);
+      const isFinal = !state.finalBossSpawned && !state.victoryShown;
+      spawnBoss(state.stage, isFinal);
       state.bossCyclesSpawned += 1;
       state.bossRepeatTimer = 0;
     }
@@ -2257,13 +2639,26 @@ function updateEnemies(dt) {
       e.y += ny * e.speed * dt;
       e.attackTimer -= dt * 1000;
       if (e.attackTimer <= 0) {
-        e.attackTimer = BOSS_ATTACK_INTERVAL_MS;
-        spawnShockwave(e.x, e.y, BOSS_SHOCK_RADIUS);
+        e.attackTimer = e.isFinalBoss ? Math.round(BOSS_ATTACK_INTERVAL_MS * 0.7) : BOSS_ATTACK_INTERVAL_MS;
+        spawnShockwave(e.x, e.y, BOSS_SHOCK_RADIUS, e.isFinalBoss ? "#ff2244" : "#3ad6ff");
+        fxLight(e.x, e.y, "#ff2244", 2.2, 420, 520);
         triggerShake(0.25, 12);
         if (dist < BOSS_SHOCK_RADIUS + p.radius && now > p.invulnUntil) {
           if (applyDamage(p, BOSS_SHOCK_DAMAGE)) {
             p.invulnUntil = now + PLAYER_IFRAME_MS;
             playHurtSound();
+          }
+        }
+      }
+      // 最終 Boss 第二攻擊模式：環形彈幕
+      if (e.isFinalBoss) {
+        e.volleyTimer -= dt * 1000;
+        if (e.volleyTimer <= 0) {
+          e.volleyTimer = 3600;
+          const count = 10;
+          for (let i = 0; i < count; i++) {
+            const a = (Math.PI * 2 * i) / count + Math.random() * 0.2;
+            spawnEnemyProjectile(e, Math.cos(a), Math.sin(a));
           }
         }
       }
@@ -2306,24 +2701,56 @@ function updateEnemies(dt) {
     }
   }
 
-  // 先清除被打死的敵人：加分、加經驗、爆炸特效、掉落物
+  // 先清除被打死的敵人：加分、加經驗、爆炸特效、掉落物、菁英死亡效果、Boss 寶箱
+  const spawnQueue = []; // 分裂菁英產生的子怪，迴圈後再入場，避免邊過濾邊修改陣列
   state.enemies = state.enemies.filter((e) => {
     if (e.hp <= 0) {
       state.score += e.killScore;
       state.kills += 1;
       spawnExplosion(e.x, e.y, "rgba(200,60,220,0.9)", e.type === "boss" ? 40 : 20);
-      playKillSound();
+      fxLight(e.x, e.y, e.type === "boss" ? "#ff2244" : "#c040ff", e.type === "boss" ? 3 : 1.2, e.type === "boss" ? 700 : 240, e.type === "boss" ? 620 : 300);
+
+      // 連殺音階：短時間內連續擊殺，音調逐級上升
+      if (now < state.killStreakUntil) state.killStreak = Math.min(state.killStreak + 1, 8);
+      else state.killStreak = 0;
+      state.killStreakUntil = now + 900;
+      playKillSound(state.killStreak);
+
       addXp(e.killXp);
       rollCurrencyDrop(e);
       tryVampireHeal();
+
+      // 菁英死亡效果
+      if (e.eliteType === "split") {
+        spawnQueue.push({ from: e, count: 2 });
+      } else if (e.eliteType === "blast") {
+        spawnExplosion(e.x, e.y, "rgba(255,160,64,0.95)", 26);
+        spawnShockwave(e.x, e.y, 90, "#ffa040");
+        fxLight(e.x, e.y, "#ffa040", 2.4, 380, 380);
+        if (distance(p, e) < 90 + p.radius && now > p.invulnUntil) {
+          if (applyDamage(p, Math.round(e.touchDamage * 0.8))) {
+            p.invulnUntil = now + PLAYER_IFRAME_MS;
+            playHurtSound();
+          }
+        }
+      }
+
       if (e.type === "boss") {
         state.bossActive = false;
         state.bossRepeatTimer = 0;
+        setBossTint(false);
+        playBossDeathSound();
+        if (e.isFinalBoss && !state.victoryShown) {
+          triggerVictory();
+        } else {
+          spawnBossChest(e.x, e.y);
+        }
       }
       return false;
     }
     return true;
   });
+  for (const q of spawnQueue) spawnSplitChildren(q.from, q.count);
 
   // 接觸傷害：無敵幀節流（不會同幀被多隻瞬殺），敵人本身不會因碰撞消失，
   // 但仍給觸碰中的敵人一點擊退，避免疊在玩家身上
@@ -2391,24 +2818,6 @@ function updateEnemyProjectiles(dt) {
     return isInExpandedViewport(proj.x, proj.y, 50);
   });
 }
-
-function drawEnemyProjectiles() {
-  for (const proj of state.enemyProjectiles) {
-    ctx.save();
-    ctx.translate(proj.x, proj.y);
-    const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, proj.radius);
-    grad.addColorStop(0, "#bfe9ff");
-    grad.addColorStop(1, "#1f7fae");
-    ctx.fillStyle = grad;
-    ctx.shadowColor = "#3ad6ff";
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.arc(0, 0, proj.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
 // ===== 彈道邏輯（自動攻擊 / 手動氣功 共用） =====
 function updateProjectiles(dt) {
   for (const proj of state.projectiles) {
@@ -2465,13 +2874,22 @@ function updateProjectiles(dt) {
 // ===== Game Over =====
 function triggerGameOver() {
   state.gameOver = true;
-  document.getElementById("final-score").textContent = `最終分數: ${state.score}`;
+  // 修為結算：本局內力珠 30% 轉為永久修為
+  const gained = Math.floor(state.player.currency * 0.3);
+  if (gained > 0) addXiuwei(gained);
+  updateRecords();
+  document.getElementById("final-score").textContent = `最終分數: ${state.score}｜關卡 ${state.stage + 1}｜擊殺 ${state.kills}`;
+  document.getElementById("death-meta-line").textContent =
+    gained > 0 ? `內力珠 ${state.player.currency} → 修為 +${gained}（選角畫面可修煉）` : "";
+  document.getElementById("death-records-line").textContent = formatRecordsLine();
   document.getElementById("game-over-screen").classList.remove("hidden");
   playGameOverSound();
   setBgmVolume(BGM_GAMEOVER_VOLUME);
 }
 
 function resetAndStart() {
+  document.body.classList.add("game-active");
+  document.getElementById("victory-screen").classList.add("hidden");
   resetState();
   updateActionButtonLabels();
   requestAnimationFrame(gameLoop);
@@ -2499,13 +2917,36 @@ function renderCharacterSelect() {
   });
 }
 
+function hexToRgbaValue(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function readableButtonText(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.4 ? "#061119" : "#f7fbff";
+}
+
 function updateActionButtonLabels() {
   const label = document.querySelector("#btn-palm .palm-label");
   if (label) label.textContent = state.player.character.palmName || "掌";
-  document.getElementById("game-container").style.setProperty("--char-accent", state.player.character.rimColor);
+  const gameContainer = document.getElementById("game-container");
+  const accent = state.player.character.rimColor;
+  for (const target of [document.documentElement, gameContainer]) {
+    target.style.setProperty("--char-accent", accent);
+    target.style.setProperty("--char-accent-soft", hexToRgbaValue(accent, 0.78));
+    target.style.setProperty("--char-accent-strong", hexToRgbaValue(accent, 0.95));
+    target.style.setProperty("--char-button-text", readableButtonText(accent));
+  }
 }
 
 function startGameWithCharacter(id) {
+  document.body.classList.add("game-active");
   document.getElementById("character-select").classList.add("hidden");
   localStorage.setItem("selectedCharacter", id);
   resetState(id);
@@ -2584,463 +3025,19 @@ function updateUI() {
 }
 
 // ===== 渲染 =====
+// #gameCanvas 交給 Three.js（WebGL）；文字飄字疊在獨立的 #text-canvas（2D）上，
+// 世界座標經 worldToScreen() 投影後繪製，確保文字銳利且不佔 WebGL 資源。
 const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d");
+const textCanvas = document.getElementById("text-canvas");
+const ctx = textCanvas.getContext("2d");
+{
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  textCanvas.width = CANVAS_W * dpr;
+  textCanvas.height = CANVAS_H * dpr;
+  ctx.scale(dpr, dpr);
+}
 const joystickCanvas = document.getElementById("joystick-canvas");
 const joystickCtx = joystickCanvas.getContext("2d");
-
-function drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha, blocked) {
-  const p = state.player;
-  const character = p.character || CHARACTERS[0];
-  const wobbleFreq = moving ? 10 : 3;
-  const wobbleAmp = moving ? 2 : 1;
-  const bob = Math.sin(animTime * wobbleFreq) * wobbleAmp;
-  const swayL = Math.sin(animTime * wobbleFreq) * 3;
-  const swayR = Math.sin(animTime * wobbleFreq + Math.PI) * 3;
-  const capeSwayL = Math.sin(animTime * wobbleFreq) * 6;
-  const capeSwayR = Math.sin(animTime * wobbleFreq + Math.PI) * 6;
-  const rimColor = blocked ? "#ffd84d" : hurt ? "#ff4444" : character.rimColor;
-  const top = -p.h / 2 + 14;
-  const bottom = p.h / 2;
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.translate(x, y + bob);
-  if (facing < 0) ctx.scale(-1, 1);
-
-  // 披風層（背後較寬、晃動幅度更大，營造層次與立體感）
-  const capeGrad = ctx.createLinearGradient(0, top, 0, bottom + 6);
-  capeGrad.addColorStop(0, shadeColor(character.bodyColor, -25));
-  capeGrad.addColorStop(1, shadeColor(character.bodyColor, -55));
-  ctx.fillStyle = capeGrad;
-  ctx.globalAlpha = alpha * 0.9;
-  ctx.beginPath();
-  ctx.moveTo(-p.w / 2 - 3, top + 2);
-  ctx.lineTo(p.w / 2 + 3, top + 2);
-  ctx.lineTo(p.w / 2 + 7 + capeSwayR, bottom + 6);
-  ctx.lineTo(-p.w / 2 - 7 + capeSwayL, bottom + 6);
-  ctx.closePath();
-  ctx.fill();
-
-  // 古風剪影身形（長袍主體），漸層補光＋背光發光剪影感
-  const bodyGrad = ctx.createLinearGradient(-p.w / 2, top, p.w / 2, bottom);
-  bodyGrad.addColorStop(0, shadeColor(character.bodyColor, 12));
-  bodyGrad.addColorStop(1, character.bodyColor);
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = bodyGrad;
-  ctx.shadowColor = rimColor;
-  ctx.shadowBlur = 14;
-
-  ctx.beginPath();
-  ctx.moveTo(-p.w / 2, top);
-  ctx.lineTo(p.w / 2, top);
-  ctx.lineTo(p.w / 2 + swayR, bottom);
-  ctx.lineTo(-p.w / 2 + swayL, bottom);
-  ctx.closePath();
-  ctx.fill();
-
-  // 肩甲飾角
-  ctx.fillStyle = shadeColor(character.bodyColor, 20);
-  ctx.beginPath();
-  ctx.moveTo(-p.w / 2, top);
-  ctx.lineTo(-p.w / 2 - 5, top + 6);
-  ctx.lineTo(-p.w / 2 + 4, top + 6);
-  ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(p.w / 2, top);
-  ctx.lineTo(p.w / 2 + 5, top + 6);
-  ctx.lineTo(p.w / 2 - 4, top + 6);
-  ctx.closePath();
-  ctx.fill();
-
-  // 頭部
-  ctx.fillStyle = bodyGrad;
-  ctx.beginPath();
-  ctx.arc(0, -p.h / 2 + 6, 11, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 髮髻／頭飾尖角
-  ctx.fillStyle = character.beltColor;
-  ctx.beginPath();
-  ctx.moveTo(-4, -p.h / 2 - 4);
-  ctx.lineTo(2, -p.h / 2 - 11);
-  ctx.lineTo(6, -p.h / 2 - 3);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.shadowBlur = 0;
-
-  // 背劍：劍柄、護手、劍身分層繪製
-  const swordX = p.w / 2 - 2;
-  ctx.fillStyle = shadeColor(character.bodyColor, -30);
-  ctx.fillRect(swordX, top + 2, 4, 10); // 劍柄
-  ctx.fillStyle = character.beltColor;
-  ctx.fillRect(swordX - 3, top + 11, 10, 3); // 護手
-  const bladeGrad = ctx.createLinearGradient(swordX, top + 14, swordX, bottom - 2);
-  bladeGrad.addColorStop(0, "#e8eef2");
-  bladeGrad.addColorStop(1, shadeColor(character.rimColor, -10));
-  ctx.fillStyle = bladeGrad;
-  ctx.fillRect(swordX, top + 14, 4, bottom - top - 16); // 劍身
-
-  // 剪影邊緣描邊發光（背光輪廓感，含披風外緣）
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = rimColor;
-  ctx.globalAlpha = alpha * 0.85;
-  ctx.beginPath();
-  ctx.moveTo(-p.w / 2, top);
-  ctx.lineTo(p.w / 2, top);
-  ctx.lineTo(p.w / 2 + swayR, bottom);
-  ctx.lineTo(-p.w / 2 + swayL, bottom);
-  ctx.closePath();
-  ctx.stroke();
-
-  ctx.lineWidth = 1;
-  ctx.globalAlpha = alpha * 0.4;
-  ctx.beginPath();
-  ctx.moveTo(-p.w / 2 - 3, top + 2);
-  ctx.lineTo(-p.w / 2 - 7 + capeSwayL, bottom + 6);
-  ctx.moveTo(p.w / 2 + 3, top + 2);
-  ctx.lineTo(p.w / 2 + 7 + capeSwayR, bottom + 6);
-  ctx.stroke();
-
-  // 腰帶
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = character.beltColor;
-  ctx.fillRect(-p.w / 2, -p.h / 2 + 24, p.w, 3);
-
-  // 眉峰描邊
-  ctx.strokeStyle = rimColor;
-  ctx.lineWidth = 1;
-  ctx.globalAlpha = alpha * 0.7;
-  ctx.beginPath();
-  ctx.moveTo(0, -p.h / 2 + 2);
-  ctx.lineTo(7, -p.h / 2 + 1);
-  ctx.stroke();
-
-  // 眼神發光點
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = rimColor;
-  ctx.shadowColor = rimColor;
-  ctx.shadowBlur = 10;
-  ctx.beginPath();
-  ctx.arc(4, -p.h / 2 + 5, 2, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-
-// 若角色已提供正式透明 sprite（assetImages[character.spriteKey]）才用 drawImage 畫角色，
-// 圖片載入失敗或尚未到位時自動 fallback 回 drawPlayerShape() 的 Canvas 繪製（保留原版火柴人邏輯）。
-function drawPlayerSprite(x, y, facing, animTime, moving, hurt, alpha, character, blocked) {
-  const sprite = character && character.spriteKey && assetImages[character.spriteKey];
-  if (!sprite) {
-    drawPlayerShape(x, y, facing, animTime, moving, hurt, alpha, blocked);
-    return;
-  }
-  const h = character.spriteHeight || 72;
-  const w = (sprite.width / sprite.height) * h;
-  const rimColor = blocked ? "#ffd84d" : hurt ? "#ff4444" : character.rimColor;
-
-  // 微動態：移動中較快較大幅度的上下浮動，靜止時保留小幅度呼吸感（純垂直位移，不帶旋轉，避免讀成左右搖晃）
-  const wobbleFreq = moving ? 10 : 3;
-  const wobbleAmp = moving ? 5 : 2;
-  const bob = Math.sin(animTime * wobbleFreq) * wobbleAmp;
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.translate(x, y + bob);
-  // 部分角色原圖預設朝左（spriteFacesLeft），鏡像條件需反轉才能讓移動方向與臉部朝向一致
-  const mirror = character.spriteFacesLeft ? facing > 0 : facing < 0;
-  if (mirror) ctx.scale(-1, 1);
-
-  // 保留原本繪製版的角色光環效果，疊在 sprite 之下
-  ctx.save();
-  ctx.globalAlpha = alpha * 0.35;
-  const haloGrad = ctx.createRadialGradient(0, -h / 2, 1, 0, -h / 2, h * 0.6);
-  haloGrad.addColorStop(0, rimColor);
-  haloGrad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = haloGrad;
-  ctx.beginPath();
-  ctx.arc(0, -h / 2, h * 0.6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.drawImage(sprite, -w / 2, -h, w, h);
-  ctx.restore();
-}
-
-function drawPlayer() {
-  const p = state.player;
-  const hurt = isHurt(p);
-  const blocked = performance.now() < p.blockFlashUntil;
-  // 受傷閃爍：短時間內交替透明度，讓玩家明確感知到「中招了」
-  // 格擋閃爍：金色快閃，與受傷的紅色閃爍明確區隔，讓「護盾擋下了」這個瞬間可辨
-  const flicker = hurt
-    ? (Math.floor(performance.now() / 70) % 2 === 0 ? 0.3 : 1)
-    : blocked
-    ? (Math.floor(performance.now() / 50) % 2 === 0 ? 0.5 : 1)
-    : 1;
-
-  // 殘影特效：移動中由舊到新、由淡到濃的剪影分身
-  for (let i = 0; i < p.history.length; i++) {
-    const h = p.history[i];
-    const alpha = ((i + 1) / (p.history.length + 1)) * 0.35;
-    drawPlayerSprite(h.x, h.y, h.facing, h.animTime, true, false, alpha, p.character, false);
-  }
-
-  drawPlayerSprite(p.x, p.y, p.facing, p.animTime, p.moving, hurt, flicker, p.character, blocked);
-  drawPlayerStatusFx(p);
-}
-
-// 角色身上的技能狀態特效：護體罡氣待命中／狂狼之力發動中／吸血掌剛觸發，三者用顏色與形態明確區隔
-// 護盾＝金色靜置光環（待命感）、狂狼＝紫紅高頻脈動環（緊迫感）、吸血＝綠色觸發瞬間擴散環（回復感）
-function drawPlayerStatusFx(p) {
-  const now = performance.now();
-  ctx.save();
-  ctx.translate(p.x, p.y - p.h / 2);
-
-  if (p.barrierCharge) {
-    const pulse = 0.5 + 0.5 * Math.sin(now / 220);
-    ctx.save();
-    ctx.globalAlpha = 0.45 + 0.25 * pulse;
-    ctx.strokeStyle = "#ffd84d";
-    ctx.shadowColor = "#ffd84d";
-    ctx.shadowBlur = 14;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, p.radius + 10 + pulse * 3, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  if (getEnrageMult(p) > 1) {
-    const pulse = 0.5 + 0.5 * Math.sin(now / 110);
-    ctx.save();
-    ctx.globalAlpha = 0.4 + 0.3 * pulse;
-    ctx.strokeStyle = "#c060ff";
-    ctx.shadowColor = "#ff2bd6";
-    ctx.shadowBlur = 18 + pulse * 8;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, 0, p.radius + 6 + pulse * 5, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  if (now < p.vampireFxUntil) {
-    const t = Math.max(0, (p.vampireFxUntil - now) / VAMPIRE_FX_DURATION);
-    ctx.save();
-    ctx.globalAlpha = t * 0.6;
-    ctx.strokeStyle = "#3fe080";
-    ctx.shadowColor = "#3fe080";
-    ctx.shadowBlur = 16;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, 0, p.radius + 14 * (1 - t), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  ctx.restore();
-}
-
-function drawEnemy(e) {
-  const hurt = isHurt(e);
-  const visual = ENEMY_VISUALS[e.baseType] || ENEMY_VISUALS.drifter;
-  const isBoss = e.type === "boss";
-
-  ctx.save();
-  ctx.translate(e.x, e.y);
-
-  if (e.ambushWarning) {
-    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 70);
-    ctx.save();
-    ctx.globalAlpha = 0.35 + 0.35 * pulse;
-    ctx.strokeStyle = "#ff3b3b";
-    ctx.shadowColor = "#ff3b3b";
-    ctx.shadowBlur = 16;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, 0, e.radius + 6 + pulse * 6, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, e.radius);
-  if (hurt) {
-    grad.addColorStop(0, "#ffffff");
-    grad.addColorStop(1, e.isBrute || isBoss ? "#ff5500" : "#ff2222");
-  } else {
-    grad.addColorStop(0, visual.core);
-    grad.addColorStop(0.6, visual.mid);
-    grad.addColorStop(1, visual.edge);
-  }
-  ctx.fillStyle = grad;
-  ctx.shadowColor = visual.glow;
-  ctx.shadowBlur = isBoss ? 28 : e.isBrute ? 20 : 14;
-  ctx.beginPath();
-  ctx.arc(0, 0, e.radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  if (e.isBrute) {
-    ctx.strokeStyle = "#ff6a00";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, e.radius + 3, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  // 小血條
-  const barW = e.radius * 2;
-  ctx.fillStyle = "#400";
-  ctx.fillRect(-barW / 2, -e.radius - 10, barW, 4);
-  ctx.fillStyle = "#2ecc71";
-  ctx.fillRect(-barW / 2, -e.radius - 10, barW * Math.max(0, e.hp / e.maxHp), 4);
-
-  ctx.restore();
-}
-
-function drawBladeProjectile(proj) {
-  const len = proj.length;
-  const halfW = proj.width / 2;
-  const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
-  grad.addColorStop(0, "rgba(255,120,38,0)");
-  grad.addColorStop(0.35, "rgba(255,160,54,0.55)");
-  grad.addColorStop(0.72, proj.coreColor || "#fff6b0");
-  grad.addColorStop(1, proj.color || "#ffd84d");
-
-  ctx.globalCompositeOperation = "lighter";
-  ctx.shadowColor = proj.color || "#ffd84d";
-  ctx.shadowBlur = 22;
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.moveTo(-len / 2, -halfW * 0.15);
-  ctx.quadraticCurveTo(-len * 0.12, -halfW * 1.28, len / 2, -halfW * 0.15);
-  ctx.quadraticCurveTo(len * 0.2, halfW * 0.55, -len / 2, halfW * 0.55);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(255,246,176,0.85)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(-len * 0.3, halfW * 0.42);
-  ctx.quadraticCurveTo(len * 0.18, -halfW * 0.42, len * 0.48, -halfW * 0.04);
-  ctx.stroke();
-}
-
-function drawShadowProjectile(proj) {
-  const len = proj.length;
-  const halfW = proj.width / 2;
-  const time = performance.now() / 120;
-  ctx.globalCompositeOperation = "lighter";
-  ctx.lineCap = "round";
-  ctx.shadowColor = proj.color || "#c060ff";
-  ctx.shadowBlur = 26;
-
-  for (let i = 0; i < 4; i++) {
-    const shift = i * 8;
-    const fade = 0.18 + i * 0.12;
-    const wave = Math.sin(time + i * 0.9) * halfW * 0.12;
-    ctx.fillStyle = `rgba(116, 42, 190, ${fade})`;
-    ctx.beginPath();
-    ctx.moveTo(-len / 2 - shift, -halfW * 0.35 + wave);
-    ctx.quadraticCurveTo(-len * 0.12 - shift, -halfW * (1.1 - i * 0.12), len * 0.5 - shift * 0.25, 0);
-    ctx.quadraticCurveTo(-len * 0.1 - shift, halfW * (0.85 - i * 0.1), -len / 2 - shift, halfW * 0.28 + wave);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  ctx.strokeStyle = "rgba(238,210,255,0.9)";
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(-len * 0.46, halfW * 0.18);
-  ctx.quadraticCurveTo(-len * 0.04, -halfW * 0.72, len * 0.45, -halfW * 0.03);
-  ctx.stroke();
-}
-
-function drawFrostProjectile(proj) {
-  const len = proj.length;
-  const halfW = proj.width / 2;
-  const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
-  grad.addColorStop(0, "rgba(100,220,255,0)");
-  grad.addColorStop(0.45, "rgba(189,244,255,0.45)");
-  grad.addColorStop(1, "rgba(255,255,255,0.95)");
-
-  ctx.globalCompositeOperation = "lighter";
-  ctx.shadowColor = "#bdf4ff";
-  ctx.shadowBlur = 20;
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.moveTo(-len / 2, 0);
-  ctx.lineTo(len * 0.34, -halfW);
-  ctx.lineTo(len / 2, 0);
-  ctx.lineTo(len * 0.34, halfW);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(255,255,255,0.82)";
-  ctx.lineWidth = 1.5;
-  for (let i = -1; i <= 1; i++) {
-    ctx.beginPath();
-    ctx.moveTo(-len * 0.28, 0);
-    ctx.lineTo(len * 0.38, i * halfW * 0.62);
-    ctx.stroke();
-  }
-}
-
-function drawQiVisualProjectile(proj) {
-  if (proj.visualType === "blade") {
-    drawBladeProjectile(proj);
-  } else if (proj.visualType === "shadow") {
-    drawShadowProjectile(proj);
-  } else if (proj.visualType === "frost") {
-    drawFrostProjectile(proj);
-  }
-}
-
-function drawProjectile(proj) {
-  ctx.save();
-  ctx.translate(proj.x, proj.y);
-  ctx.rotate(Math.atan2(proj.vy, proj.vx));
-
-  if (proj.visualType) {
-    drawQiVisualProjectile(proj);
-    ctx.restore();
-    return;
-  }
-
-  // 氣攻擊：飛行中沿用光影擴散特效圖，不再疊加舊版橢圓
-  if (proj.imgKey && assetImages[proj.imgKey]) {
-    const img = assetImages[proj.imgKey];
-    const h = proj.radius * 4.5;
-    const w = (img.width / img.height) * h;
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
-    ctx.restore();
-    return;
-  }
-
-  // 自動攻擊／無目標氣彈：依角色顏色染色的發光橢圓
-  const len = proj.radius * 3.6;
-  const edgeColor = proj.color || "#ff8a3a";
-  const tipColor = proj.color ? shadeColor(proj.color, 55) : "#ffd84d";
-  const grad = ctx.createLinearGradient(-len / 2, 0, len / 2, 0);
-  grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(0.6, tipColor);
-  grad.addColorStop(1, edgeColor);
-  ctx.fillStyle = grad;
-  ctx.shadowColor = edgeColor;
-  ctx.shadowBlur = 22;
-  ctx.beginPath();
-  ctx.ellipse(0, 0, len / 2, proj.radius, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-
-const HORIZON_Y = CANVAS_H * 0.65;
 
 // 視差層捲動速度集中設定：天空雲層最慢、遠山中等、地面（裝飾＋角色所在層）與攝影機同速，
 // 飛沙粒子比攝影機更快、反向飄移，所有調速都改這裡，不要散落在各個繪製函式裡。
@@ -3052,342 +3049,48 @@ const PARALLAX_CONFIG = {
   dustIdleDrift: 6, // 玩家靜止時，粒子仍緩慢飄移的像素/秒基準速度
 };
 
-const DUST_COUNT = 30;
-
-function createDustField(scene) {
-  const particles = [];
-  for (let i = 0; i < DUST_COUNT; i++) {
-    particles.push({
-      x: Math.random() * CANVAS_W,
-      y: Math.random() * CANVAS_H,
-      size: 1 + Math.random() * 2.2,
-      jitterPhase: Math.random() * Math.PI * 2,
-      jitterSpeed: 0.5 + Math.random() * 1.2,
-      color: scene && scene.dustColor ? scene.dustColor : "rgba(255,255,255,0.5)",
-    });
-  }
-  return particles;
-}
-
-function updateDustParticles(dt) {
-  const p = state.player;
-  const scene = getCurrentScene();
-  const dirX = p.moving ? -p.moveDirX : 0;
-  const dirY = p.moving ? -p.moveDirY : 0;
-  const speed = p.moving ? p.speed * PARALLAX_CONFIG.dust : PARALLAX_CONFIG.dustIdleDrift;
-  for (const d of state.dust) {
-    d.jitterPhase += dt * d.jitterSpeed;
-    const jitterX = Math.sin(d.jitterPhase) * 6;
-    const jitterY = Math.cos(d.jitterPhase * 1.3) * 4;
-    d.x += dirX * speed * dt + jitterX * dt;
-    d.y += dirY * speed * dt + jitterY * dt;
-    d.color = scene.dustColor || d.color;
-    if (d.x < -10) d.x = CANVAS_W + 10;
-    if (d.x > CANVAS_W + 10) d.x = -10;
-    if (d.y < -10) d.y = CANVAS_H + 10;
-    if (d.y > CANVAS_H + 10) d.y = -10;
-  }
-}
-
-function drawDustParticles() {
-  ctx.save();
-  for (const d of state.dust) {
-    ctx.fillStyle = d.color;
-    ctx.beginPath();
-    ctx.arc(d.x, d.y, d.size, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-const FAR_MOUNTAINS = [
-  { baseX: 30, width: 130, height: 55 },
-  { baseX: 150, width: 160, height: 80 },
-  { baseX: 300, width: 150, height: 60 },
-  { baseX: 420, width: 120, height: 45 },
-];
-
-const STAR_FIELD = Array.from({ length: 40 }, (_, i) => ({
-  x: (i * 53 + 17) % CANVAS_W,
-  y: (i * 29 + 5) % HORIZON_Y,
-  size: 1 + (i % 3),
-}));
 
 // 三組輪替場景：沙漠黃昏／竹林夜月／古城門遺跡夜景，每 1-2 關切換一次
-const SCENES = [
-  {
-    name: "沙漠黃昏",
-    bgKey: "desert_dusk",
-    skyTop: "#4a2a22",
-    skyMid: "#c9784a",
-    skyBottom: "#ffb066",
-    groundTop: "#6b4a28",
-    groundBottom: "#2c1d10",
-    mountainColor: "rgba(90,55,30,0.55)",
-    dustColor: "rgba(230,180,120,0.45)",
-    skyDecor: "sun",
-    drawDecor(c, x, y, hash) {
-      // 極淡、低對比的沙地紋理色塊，刻意避開正圓/正橢圓的「點狀」輪廓
-      const grad = c.createRadialGradient(x, y, 0, x, y, 14 + hash * 12);
-      grad.addColorStop(0, "rgba(110,80,50,0.10)");
-      grad.addColorStop(1, "rgba(110,80,50,0)");
-      c.fillStyle = grad;
-      c.beginPath();
-      c.ellipse(x, y, 14 + hash * 12, 6 + hash * 5, hash * Math.PI, 0, Math.PI * 2);
-      c.fill();
-    },
-  },
-  {
-    name: "竹林夜月",
-    bgKey: "bamboo_moon",
-    skyTop: "#0a1430",
-    skyMid: "#1c2a55",
-    skyBottom: "#34406a",
-    groundTop: "#16240f",
-    groundBottom: "#0a120a",
-    mountainColor: "rgba(20,40,30,0.6)",
-    dustColor: "rgba(220,255,210,0.4)",
-    skyDecor: "moon",
-    drawDecor(c, x, y, hash) {
-      if (hash < 0.1) {
-        c.save();
-        c.fillStyle = "rgba(202,255,176,0.35)";
-        c.shadowColor = "rgba(202,255,176,0.35)";
-        c.shadowBlur = 5;
-        c.beginPath();
-        c.arc(x, y, 1.3, 0, Math.PI * 2);
-        c.fill();
-        c.restore();
-        return;
-      }
-      c.strokeStyle = "rgba(63,106,58,0.45)";
-      c.lineWidth = 4;
-      c.beginPath();
-      c.moveTo(x, y + 14);
-      c.lineTo(x, y - 14);
-      c.stroke();
-      c.strokeStyle = "rgba(90,138,82,0.4)";
-      c.lineWidth = 2;
-      c.beginPath();
-      c.moveTo(x, y - 6);
-      c.lineTo(x + 8, y - 10);
-      c.stroke();
-    },
-  },
-  {
-    name: "古城門遺跡夜景",
-    bgKey: "ruins_night",
-    skyTop: "#10101c",
-    skyMid: "#241f30",
-    skyBottom: "#463a4a",
-    groundTop: "#2a2422",
-    groundBottom: "#14110f",
-    mountainColor: "rgba(40,35,45,0.6)",
-    dustColor: "rgba(180,90,90,0.4)",
-    skyDecor: "stars",
-    drawDecor(c, x, y, hash) {
-      if (hash < 0.12) {
-        c.save();
-        c.fillStyle = "rgba(255,174,66,0.4)";
-        c.shadowColor = "rgba(255,174,66,0.4)";
-        c.shadowBlur = 8;
-        c.beginPath();
-        c.arc(x, y, 2.6, 0, Math.PI * 2);
-        c.fill();
-        c.restore();
-        return;
-      }
-      c.fillStyle = "rgba(90,74,72,0.4)";
-      c.fillRect(x - 5, y - 18, 10, 18);
-    },
-  },
-];
+// 場景資料（僅保留名稱供關卡橫幅使用；視覺配置全在 engine3d.js 的 SCENE3D）
+const SCENES = [{ name: "沙漠黃昏" }, { name: "竹林夜月" }, { name: "古城遺跡夜景" }];
 
-const STAGE_SCENE_INDEX = [0, 0, 1, 1, 2, 2, 0, 1];
 
-function getCurrentScene() {
-  return SCENES[STAGE_SCENE_INDEX[state.stage] || 0];
-}
-
-function drawSkyDecor(scene) {
-  if (scene.skyDecor === "sun") {
-    ctx.save();
-    ctx.fillStyle = "#ffd27a";
-    ctx.shadowColor = "#ffb066";
-    ctx.shadowBlur = 30;
-    ctx.beginPath();
-    ctx.arc(CANVAS_W * 0.72, HORIZON_Y * 0.35, 34, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  } else if (scene.skyDecor === "moon") {
-    ctx.save();
-    ctx.fillStyle = "#eaf0ff";
-    ctx.shadowColor = "#bcd0ff";
-    ctx.shadowBlur = 24;
-    ctx.beginPath();
-    ctx.arc(CANVAS_W * 0.28, HORIZON_Y * 0.3, 26, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  } else if (scene.skyDecor === "stars") {
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
-    for (const star of STAR_FIELD) {
-      ctx.fillRect(star.x, star.y, star.size, star.size);
-    }
-  }
-}
-
+// P17：每 4 關一個場景（1-4 沙漠黃昏、5-8 竹林夜月、9-12 遺跡夜景），跨場景時觸發轉場演出
+const STAGE_SCENE_INDEX = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2];
 const GROUND_DECOR_SPACING = 110;
-
-// 地面裝飾在世界座標上以較寬間距取樣，並用第二組雜湊值在格內隨機偏移，
-// 避免呈現「一顆一顆規律排列」的網格點狀外觀；整體再疊一層低透明度淡化。
-function drawGroundDecor(scene) {
-  const camX = state.camera.x;
-  const camY = state.camera.y;
-  const startCol = Math.floor(camX / GROUND_DECOR_SPACING) - 1;
-  const endCol = Math.floor((camX + CANVAS_W) / GROUND_DECOR_SPACING) + 1;
-  const startRow = Math.floor(camY / GROUND_DECOR_SPACING) - 1;
-  const endRow = Math.floor((camY + CANVAS_H) / GROUND_DECOR_SPACING) + 1;
-  ctx.save();
-  ctx.globalAlpha = 0.65;
-  for (let row = startRow; row <= endRow; row++) {
-    for (let col = startCol; col <= endCol; col++) {
-      const hash = Math.abs(Math.sin(col * 12.9898 + row * 78.233) * 43758.5453) % 1;
-      if (hash > 0.3) continue;
-      const jitterHash = Math.abs(Math.sin(col * 39.346 + row * 11.135) * 27543.123) % 1;
-      const jitterX = (jitterHash - 0.5) * GROUND_DECOR_SPACING * 0.6;
-      const jitterY = (((jitterHash * 7) % 1) - 0.5) * GROUND_DECOR_SPACING * 0.6;
-      const worldX = col * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2 + jitterX;
-      const worldY = row * GROUND_DECOR_SPACING + GROUND_DECOR_SPACING / 2 + jitterY;
-      const screenX = worldX - camX;
-      const screenY = worldY - camY;
-      if (screenY < HORIZON_Y - 20 || screenY > CANVAS_H + 20) continue;
-      scene.drawDecor(ctx, screenX, screenY, hash);
-    }
-  }
-  ctx.restore();
+function render(dt) {
+  engineRender(dt || 0.016);
+  drawTextOverlay();
+  drawJoystick();
 }
 
-// 以「鏡像 ping-pong」方式無縫鋪排單張圖：相鄰格依索引奇偶交替水平/垂直翻轉，
-// 讓每個格子的邊緣永遠對接到自己的鏡像，徹底消除直接重複貼圖造成的接縫線。
-function drawWrappedTile(img, scrollX, scrollY, tileW, tileH) {
-  const offX = ((scrollX % tileW) + tileW) % tileW;
-  const offY = ((scrollY % tileH) + tileH) % tileH;
-  const baseTileX = Math.floor(scrollX / tileW);
-  const baseTileY = Math.floor(scrollY / tileH);
-  for (let i = -1; i <= 1; i++) {
-    for (let j = -1; j <= 1; j++) {
-      const screenX = i * tileW - offX;
-      const screenY = j * tileH - offY;
-      const flipH = (((baseTileX + i) % 2) + 2) % 2 === 1;
-      const flipV = (((baseTileY + j) % 2) + 2) % 2 === 1;
-      ctx.save();
-      ctx.translate(screenX + tileW / 2, screenY + tileH / 2);
-      ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-      ctx.drawImage(img, -tileW / 2, -tileH / 2, tileW, tileH);
-      ctx.restore();
-    }
-  }
-}
-
-// 遠山輪廓視差層：水平以 CANVAS_W 為週期隨 bgScrollX×mountain 速度捲動，
-// 垂直疊加小幅度視差；不論是否已有美術背景圖都會疊加在上方，作為中速層。
-function drawMountainLayer(scene) {
-  const mountainOffset = ((state.bgScrollX * PARALLAX_CONFIG.mountain % CANVAS_W) + CANVAS_W) % CANVAS_W;
-  const mountainYParallax = state.bgScrollY * PARALLAX_CONFIG.mountain * 0.2;
-  ctx.fillStyle = scene.mountainColor;
-  for (const xOff of [-mountainOffset - CANVAS_W, -mountainOffset, -mountainOffset + CANVAS_W]) {
-    for (const m of FAR_MOUNTAINS) {
-      ctx.beginPath();
-      ctx.moveTo(xOff + m.baseX - m.width / 2, HORIZON_Y + mountainYParallax);
-      ctx.lineTo(xOff + m.baseX, HORIZON_Y - m.height + mountainYParallax);
-      ctx.lineTo(xOff + m.baseX + m.width / 2, HORIZON_Y + mountainYParallax);
-      ctx.closePath();
-      ctx.fill();
-    }
-  }
-}
-
-function drawBackground() {
-  const scene = getCurrentScene();
-  const bgImg = scene.bgKey && assetImages[scene.bgKey];
-
-  if (bgImg) {
-    // 天空／遠景圖層（最慢，0.1x）：鏡像鋪排去除接縫，玩家移動時才會推進（bgScrollX/Y 已在 updateCamera 凍結）。
-    drawWrappedTile(
-      bgImg,
-      state.bgScrollX * PARALLAX_CONFIG.sky,
-      state.bgScrollY * PARALLAX_CONFIG.sky,
-      CANVAS_W,
-      CANVAS_H
-    );
-    ctx.fillStyle = "rgba(0,0,0,0.26)";
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-    drawMountainLayer(scene);
-    drawGroundDecor(scene);
-    return;
-  }
-
-  // Fallback：原本的 Canvas 漸層背景（已淡化地面裝飾，不再出現明顯點狀物）
-  // 天空：螢幕固定，不隨攝影機捲動
-  const skyGrad = ctx.createLinearGradient(0, 0, 0, HORIZON_Y);
-  skyGrad.addColorStop(0, scene.skyTop);
-  skyGrad.addColorStop(0.55, scene.skyMid);
-  skyGrad.addColorStop(1, scene.skyBottom);
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, CANVAS_W, HORIZON_Y);
-
-  drawSkyDecor(scene);
-
-  // 遠山輪廓（中速層，0.3x）
-  drawMountainLayer(scene);
-
-  // 地面底色：螢幕固定
-  const groundGrad = ctx.createLinearGradient(0, HORIZON_Y, 0, CANVAS_H);
-  groundGrad.addColorStop(0, scene.groundTop);
-  groundGrad.addColorStop(1, scene.groundBottom);
-  ctx.fillStyle = groundGrad;
-  ctx.fillRect(0, HORIZON_Y, CANVAS_W, CANVAS_H - HORIZON_Y);
-
-  ctx.fillStyle = "rgba(255,200,140,0.3)";
-  ctx.fillRect(0, HORIZON_Y, CANVAS_W, 2);
-
-  drawGroundDecor(scene);
-}
-
-function render() {
+// 傷害/拾取飄字疊層：世界座標投影到螢幕座標後畫在 #text-canvas
+function drawTextOverlay() {
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
   ctx.save();
-  if (state.shake.time > 0) {
-    const power = state.shake.time / state.shake.duration;
-    const offsetX = (Math.random() - 0.5) * state.shake.magnitude * power;
-    const offsetY = (Math.random() - 0.5) * state.shake.magnitude * power;
-    ctx.translate(offsetX, offsetY);
+  ctx.font = "bold 18px sans-serif";
+  ctx.textAlign = "center";
+  for (const dtxt of state.damageTexts) {
+    const s = worldToScreen(dtxt.x, dtxt.y, 46);
+    if (!s.visible) continue;
+    ctx.globalAlpha = Math.max(0, dtxt.life / dtxt.maxLife);
+    ctx.fillStyle = "#ffd84d";
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 4;
+    ctx.fillText(`-${dtxt.value}`, s.x, s.y);
   }
-
-  drawBackground();
-
-  ctx.save();
-  ctx.translate(-state.camera.x, -state.camera.y);
-  drawDrops();
-  for (const e of state.enemies) drawEnemy(e);
-  drawEnemyProjectiles();
-  drawParticles();
-  drawShockwaves();
-  for (const proj of state.projectiles) drawProjectile(proj);
-  drawOrbiters();
-  drawPlayer();
-  drawFxOverlays();
-  drawDamageTexts();
-  drawPickupTexts();
+  ctx.font = "bold 14px sans-serif";
+  for (const t of state.pickupTexts) {
+    const s = worldToScreen(t.x, t.y, 40);
+    if (!s.visible) continue;
+    ctx.globalAlpha = Math.max(0, t.life / t.maxLife);
+    ctx.fillStyle = t.isHeal ? "#3fe080" : t.isLabel ? "#7adfff" : "#ffe48a";
+    ctx.shadowColor = "#000";
+    ctx.shadowBlur = 4;
+    ctx.fillText(t.isLabel ? t.amount : `+${t.amount}`, s.x, s.y);
+  }
   ctx.restore();
-
-  // 飛沙浮塵：最前景的螢幕座標層，疊在所有遊戲世界元素之上，營造速度感並掩蓋背景接縫殘留。
-  drawDustParticles();
-
-  ctx.restore();
-
-  drawJoystick();
 }
 
 // ===== RWD 縮放 =====
@@ -3528,7 +3231,7 @@ function bindActionButton(btn, triggerFn) {
 
 // ===== 主迴圈 =====
 function update(dt, timestamp) {
-  if (state.skillMenuOpen || state.upgradeChoices.length > 0) {
+  if (state.skillMenuOpen || state.upgradeChoices.length > 0 || state.victoryPause) {
     updateUI();
     return;
   }
@@ -3547,12 +3250,12 @@ function update(dt, timestamp) {
   updateProjectiles(dt);
   updateSpirals(dt);
   updateDrops(dt);
+  updateChests();
   updateParticles(dt);
   updateDamageTexts(dt);
   updatePickupTexts(dt);
   updateShockwaves(dt);
   updateFxOverlays(dt);
-  updateDustParticles(dt);
   updateUpgradeQueue();
 
   if (state.shake.time > 0) {
@@ -3577,19 +3280,62 @@ function gameLoop(timestamp) {
   }
 
   if (state.gameOver) {
-    render();
+    render(dt);
     return;
   }
 
   update(dt, timestamp);
-  render();
+  render(dt);
   requestAnimationFrame(gameLoop);
 }
 
 // ===== 啟動 =====
 loadAssets();
+initEngine({
+  canvas,
+  CANVAS_W,
+  CANVAS_H,
+  state,
+  CHARACTERS,
+  ENEMY_VISUALS,
+  assetImages,
+  VAMPIRE_FX_DURATION,
+  getEnrageMult,
+});
 resetState(CHARACTERS[0].id);
 renderCharacterSelect();
+renderMetaPanel();
+{
+  const recordsLine = document.getElementById("records-line");
+  const text = formatRecordsLine();
+  if (text) {
+    recordsLine.textContent = text;
+    recordsLine.classList.remove("hidden");
+  }
+}
+document.getElementById("victory-endless-btn").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  state.victoryPause = false;
+  document.getElementById("victory-screen").classList.add("hidden");
+  showStageBanner("無盡試煉", "浩劫未止，武道無涯");
+});
+// Playwright／除錯用把手：module scope 不外洩全域，統一掛在 window.__game
+window.__game = {
+  state,
+  CHARACTERS,
+  SKILL_DEFS,
+  STAGE_CONFIGS,
+  spawnEnemy,
+  spawnBoss,
+  resetState,
+  startGameWithCharacter,
+  getAvailableEvolution,
+  buildChestChoices,
+  selectUpgrade,
+  getXiuwei,
+  getBgmIntensity,
+  applyScene,
+};
 lastTime = performance.now();
 requestAnimationFrame(gameLoop);
 

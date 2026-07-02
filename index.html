@@ -4,11 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>青鋒夜玄：俠影之戰</title>
-<link rel="stylesheet" href="style.css?v=31">
+<link rel="stylesheet" href="style.css?v=40">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three.module.min.js",
+    "three/addons/": "./lib/addons/"
+  }
+}
+</script>
 </head>
 <body>
   <div id="game-container">
     <canvas id="gameCanvas" width="450" height="800"></canvas>
+    <canvas id="text-canvas" width="450" height="800"></canvas>
     <div id="ui-overlay">
       <div id="score">分數: 0</div>
       <div id="hp-bar-bg"><div id="hp-bar-fill"></div></div>
@@ -25,14 +34,28 @@
     <div id="boss-hp-bar-bg" class="hidden"><div id="boss-hp-bar-fill"></div></div>
     <button id="btn-skills" aria-label="技能表">⚙</button>
     <div id="survival-timer"><span id="timer-text">0:00</span><span id="stage-text">關卡 1</span></div>
+    <div id="stage-banner" class="hidden"><span id="stage-banner-title"></span><span id="stage-banner-sub"></span></div>
     <div id="character-select">
       <h1>選擇角色</h1>
       <div id="character-options"></div>
+      <div id="records-line" class="hidden"></div>
+      <div id="meta-panel">
+        <div id="meta-header"><span>修煉（永久加成）</span><span id="meta-currency">修為: 0</span></div>
+        <div id="meta-list"></div>
+      </div>
     </div>
     <div id="game-over-screen" class="hidden">
       <h1>遊戲結束</h1>
       <p id="final-score"></p>
+      <p id="death-meta-line"></p>
+      <p id="death-records-line"></p>
       <p>按 R 重新開始</p>
+    </div>
+    <div id="victory-screen" class="hidden">
+      <h1>大功告成！</h1>
+      <p id="victory-stats"></p>
+      <p id="victory-meta-line"></p>
+      <button id="victory-endless-btn">繼續無盡模式</button>
     </div>
     <div id="level-up-backdrop" class="hidden"></div>
     <div id="level-up-cards" class="hidden"></div>
@@ -60,7 +83,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=31"></script>
-  <script src="hotfix.js?v=31"></script>
+  <script type="module" src="game.js?v=40"></script>
 </body>
 </html>
