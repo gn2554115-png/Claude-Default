@@ -63,6 +63,10 @@ const SCENE3D = [
 let activeSceneIdx = -1;
 
 // ===== 工具 =====
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
 const _colorCache = new Map();
 function cssToColor(css) {
   if (_colorCache.has(css)) return _colorCache.get(css);
@@ -140,6 +144,116 @@ function makeOrbTexture(visual, size = 128) {
   c.fillStyle = g2;
   c.beginPath();
   c.arc(cx, cx, size * 0.5, 0, Math.PI * 2);
+  c.fill();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// P18：新增 3 種輪廓明顯不同於圓形光球的敵人造型（純程式碼生成，不需美術資源）——
+// 尖刺魔（星芒尖刺）、環爪魔（空心環）、裂魂蟲（三節連珠），供 spiker/ringer/serpent 三個新敵種使用
+
+// 尖刺魔：星芒尖刺輪廓，視覺上比圓形更具攻擊性，呼應其高速衝撞的玩法定位
+function makeSpikeTexture(visual, size = 128) {
+  const cv = makeCanvas(size);
+  const c = cv.getContext("2d");
+  const cx = size / 2;
+  const spikeCount = 8;
+  const outerR = size * 0.48;
+  const innerR = size * 0.2;
+  c.beginPath();
+  for (let i = 0; i < spikeCount * 2; i++) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const a = (Math.PI * i) / spikeCount - Math.PI / 2;
+    const x = cx + Math.cos(a) * r;
+    const y = cx + Math.sin(a) * r;
+    if (i === 0) c.moveTo(x, y);
+    else c.lineTo(x, y);
+  }
+  c.closePath();
+  const g = c.createRadialGradient(cx, cx, size * 0.04, cx, cx, outerR);
+  g.addColorStop(0, visual.core);
+  g.addColorStop(0.5, visual.mid);
+  g.addColorStop(1, visual.edge);
+  c.fillStyle = g;
+  c.fill();
+  c.globalCompositeOperation = "lighter";
+  const g2 = c.createRadialGradient(cx, cx, 0, cx, cx, innerR * 1.5);
+  g2.addColorStop(0, visual.glow);
+  g2.addColorStop(1, "rgba(0,0,0,0)");
+  c.fillStyle = g2;
+  c.beginPath();
+  c.arc(cx, cx, innerR * 1.5, 0, Math.PI * 2);
+  c.fill();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// 環爪魔：空心圓環輪廓（even-odd 填色規則挖空中心），與其餘實心敵人明顯不同，呼應其環繞牽制的玩法定位
+function makeRingBlobTexture(visual, size = 128) {
+  const cv = makeCanvas(size);
+  const c = cv.getContext("2d");
+  const cx = size / 2;
+  const outerR = size * 0.46;
+  const innerR = size * 0.22;
+  c.save();
+  c.beginPath();
+  c.arc(cx, cx, outerR, 0, Math.PI * 2);
+  c.arc(cx, cx, innerR, 0, Math.PI * 2, true);
+  c.closePath();
+  const g = c.createRadialGradient(cx, cx, innerR, cx, cx, outerR);
+  g.addColorStop(0, visual.core);
+  g.addColorStop(0.55, visual.mid);
+  g.addColorStop(1, visual.edge);
+  c.fillStyle = g;
+  c.fill("evenodd");
+  c.restore();
+  c.globalCompositeOperation = "lighter";
+  const g2 = c.createRadialGradient(cx, cx, outerR * 0.75, cx, cx, outerR * 1.08);
+  g2.addColorStop(0, "rgba(0,0,0,0)");
+  g2.addColorStop(0.7, visual.glow);
+  g2.addColorStop(1, "rgba(0,0,0,0)");
+  c.fillStyle = g2;
+  c.beginPath();
+  c.arc(cx, cx, outerR * 1.08, 0, Math.PI * 2);
+  c.fill();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// 裂魂蟲：三節連珠輪廓（大小遞減、斜向排列），與單一圓形明顯不同，呼應其潛伏突襲的玩法定位
+function makeSegmentedTexture(visual, size = 128) {
+  const cv = makeCanvas(size);
+  const c = cv.getContext("2d");
+  const cx = size / 2;
+  const segments = [
+    { r: size * 0.22, dx: -size * 0.22, dy: size * 0.18 },
+    { r: size * 0.17, dx: 0, dy: 0 },
+    { r: size * 0.12, dx: size * 0.2, dy: -size * 0.17 },
+  ];
+  for (const seg of segments) {
+    const x = cx + seg.dx;
+    const y = cx + seg.dy;
+    const g = c.createRadialGradient(x, y, seg.r * 0.05, x, y, seg.r);
+    g.addColorStop(0, visual.core);
+    g.addColorStop(0.55, visual.mid);
+    g.addColorStop(1, visual.edge);
+    c.fillStyle = g;
+    c.beginPath();
+    c.arc(x, y, seg.r, 0, Math.PI * 2);
+    c.fill();
+  }
+  c.globalCompositeOperation = "lighter";
+  const glowColor = visual.glow.startsWith("#") ? visual.glow + "44" : visual.glow;
+  const g2 = c.createRadialGradient(cx, cx, size * 0.05, cx, cx, size * 0.42);
+  g2.addColorStop(0, "rgba(0,0,0,0)");
+  g2.addColorStop(0.6, glowColor);
+  g2.addColorStop(1, "rgba(0,0,0,0)");
+  c.fillStyle = g2;
+  c.beginPath();
+  c.arc(cx, cx, size * 0.42, 0, Math.PI * 2);
   c.fill();
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -224,6 +338,10 @@ function makeSprite(texture, color, additive = false) {
 
 // ===== 世界物件 =====
 let groundMesh, skyMesh, celestialSprite, starPoints;
+let bgPhotoMesh = null;
+let bgPhotoLoadedKey = null;
+// P18：場景 index → 使用者可提供的背景相片 assetImages key（沿用 game.js 既有的 loadImage/assetImages 模式）
+const SCENE_BG_PHOTO_KEYS = ["bg_desert", "bg_bamboo", "bg_ruins"];
 let ambientLight, dirLight;
 let propGroups = {}; // 每種 prop 一個 InstancedMesh
 let propSeedCenter = { x: Infinity, z: Infinity };
@@ -260,60 +378,81 @@ let camCurrent = new THREE.Vector3();
 let bootstrapped = false;
 
 // ===== 初始化 =====
+// P18：整個函式包 try/catch——3D 初始化在部分裝置（行動端 GPU/瀏覽器差異）可能因 shader 編譯、
+// WebGL context 建立等原因拋出例外；過去這裡完全沒有防護，一旦拋錯會讓 game.js 這支 module script
+// 的求值直接中止，導致後面的輸入監聽（搖桿/鍵盤/RAF 主迴圈）全部沒機會註冊——玩家角色因此完全不會動。
+// 現在無論成功與否都讓函式正常返回，遊戲邏輯與輸入永遠能運作；3D 畫面頂多退化或缺席，不影響可玩性。
 export function initEngine(refs) {
-  R = refs;
-  const canvas = refs.canvas;
-  W = refs.CANVAS_W;
-  H = refs.CANVAS_H;
+  try {
+    R = refs;
+    const canvas = refs.canvas;
+    W = refs.CANVAS_W;
+    H = refs.CANVAS_H;
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setSize(W, H, false);
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(W, H, false);
 
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(CAM_FOV, W / H, 10, 6000);
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(CAM_FOV, W / H, 10, 6000);
 
-  // 燈光
-  ambientLight = new THREE.AmbientLight(0xffffff, 1);
-  dirLight = new THREE.DirectionalLight(0xffffff, 1);
-  dirLight.position.set(0.4, 1, 0.35);
-  scene.add(ambientLight, dirLight);
-  for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
-    const l = new THREE.PointLight(0xffffff, 0, 420, 1.6);
-    l.visible = false;
-    scene.add(l);
-    lightPool.push({ light: l, until: 0, duration: 1, baseIntensity: 0 });
+    // 燈光
+    ambientLight = new THREE.AmbientLight(0xffffff, 1);
+    dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(0.4, 1, 0.35);
+    scene.add(ambientLight, dirLight);
+    for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
+      const l = new THREE.PointLight(0xffffff, 0, 420, 1.6);
+      l.visible = false;
+      scene.add(l);
+      lightPool.push({ light: l, until: 0, duration: 1, baseIntensity: 0 });
+    }
+
+    // 貼圖
+    TEX.glow = makeGlowTexture(128, 0, 0.25);
+    TEX.glowHard = makeGlowTexture(128, 0.1, 0.55);
+    TEX.ring = makeRingTexture(256, 0.66, 0.94);
+    TEX.orbs = {};
+    const ENEMY_TEXTURE_MAKERS = { spiker: makeSpikeTexture, ringer: makeRingBlobTexture, serpent: makeSegmentedTexture };
+    for (const key in R.ENEMY_VISUALS) {
+      const makeFn = ENEMY_TEXTURE_MAKERS[key] || makeOrbTexture;
+      TEX.orbs[key] = makeFn(R.ENEMY_VISUALS[key]);
+    }
+
+    buildGround();
+    buildSky();
+    buildBgPhoto();
+    buildParticles();
+    buildDust();
+    buildPlayerRig();
+
+    applyScene(0, true);
+
+    // 後製鏈獨立包一層：bloom/shader pass 在部分裝置（浮點材質貼圖支援度、GPU 差異）比基礎渲染更容易失敗，
+    // 失敗時只掉後製效果，不影響場景本身仍可渲染（engineRender 會偵測 composer 是否存在再決定走哪條路徑）。
+    const noBloom = typeof location !== "undefined" && location.search.includes("nobloom");
+    try {
+      composer = new EffectComposer(renderer);
+      composer.addPass(new RenderPass(scene, camera));
+      if (!noBloom) {
+        // 1/4 解析度渲染輝光：bloom 本質是模糊，低解析度視覺差異極小、GPU 負擔大減（手機效能守則）
+        bloomPass = new UnrealBloomPass(new THREE.Vector2(W / 4, H / 4), 0.75, 0.5, 0.62);
+        composer.addPass(bloomPass);
+      }
+      gradePass = new ShaderPass(GradeShader);
+      composer.addPass(gradePass);
+      composer.addPass(new OutputPass());
+    } catch (composerErr) {
+      console.warn("[engine3d] 後製效果鏈建立失敗，退回無後製直接渲染", composerErr);
+      composer = null;
+      gradePass = null;
+    }
+
+    bootstrapped = true;
+  } catch (err) {
+    console.error("[engine3d] 3D 引擎初始化失敗，遊戲邏輯與操作仍會正常運作，僅 3D 畫面無法顯示", err);
+    bootstrapped = false;
   }
-
-  // 貼圖
-  TEX.glow = makeGlowTexture(128, 0, 0.25);
-  TEX.glowHard = makeGlowTexture(128, 0.1, 0.55);
-  TEX.ring = makeRingTexture(256, 0.66, 0.94);
-  TEX.orbs = {};
-  for (const key in R.ENEMY_VISUALS) TEX.orbs[key] = makeOrbTexture(R.ENEMY_VISUALS[key]);
-
-  buildGround();
-  buildSky();
-  buildParticles();
-  buildDust();
-  buildPlayerRig();
-
-  applyScene(0, true);
-
-  // 後製（?nobloom 可停用輝光，供低階裝置/除錯用）
-  const noBloom = typeof location !== "undefined" && location.search.includes("nobloom");
-  composer = new EffectComposer(renderer);
-  composer.addPass(new RenderPass(scene, camera));
-  if (!noBloom) {
-    // 1/4 解析度渲染輝光：bloom 本質是模糊，低解析度視覺差異極小、GPU 負擔大減（手機效能守則）
-    bloomPass = new UnrealBloomPass(new THREE.Vector2(W / 4, H / 4), 0.75, 0.5, 0.62);
-    composer.addPass(bloomPass);
-  }
-  gradePass = new ShaderPass(GradeShader);
-  composer.addPass(gradePass);
-  composer.addPass(new OutputPass());
-
-  bootstrapped = true;
 }
 
 // ===== 地面（程序化 shader，世界座標取樣 → 無限延伸） =====
@@ -438,6 +577,27 @@ function buildSky() {
     new THREE.PointsMaterial({ color: 0xcfd8ff, size: 7, sizeAttenuation: true, transparent: true, opacity: 0.85, depthWrite: false })
   );
   scene.add(starPoints);
+}
+
+// P18：使用者提供的背景相片——原規劃是貼在天空球內側的「地平線背景」，但實測發現這個俯角相機
+// （58° 俯視）視錐幾乎全程只看得到地面，天空範圍在畫面上實際不可見（連原本的日月 celestialSprite
+// 投影出來也一樣落在畫面外），所以改用「跟隨攝影機重新置中的地面相片疊層」——比照 groundMesh
+// 本身「每幀重新置中到 camCurrent」的做法，永遠鋪在角色腳下的可視地面範圍內，不會有貼圖平鋪接縫，
+// 也不受這個相機視角限制，保證使用者提供的照片一定看得到。未提供圖片時保持 visible=false 不影響原本地面。
+function buildBgPhoto() {
+  const geo = new THREE.PlaneGeometry(2400, 2400);
+  const mat = new THREE.MeshBasicMaterial({
+    transparent: true,
+    opacity: 0.92,
+    depthWrite: false,
+    fog: true, // 讓照片邊緣自然融入場景霧氣，避免與程序化地面的銜接過於突兀
+    side: THREE.DoubleSide,
+  });
+  bgPhotoMesh = new THREE.Mesh(geo, mat);
+  bgPhotoMesh.rotation.x = -Math.PI / 2; // 平躺於地面（XZ 平面），與 groundMesh 相同的攤平方式
+  bgPhotoMesh.position.y = 1; // 略高於程序化地面，depthTest 時天然更靠近攝影機，避免 z-fighting
+  bgPhotoMesh.visible = false;
+  scene.add(bgPhotoMesh);
 }
 
 // ===== 場景道具（InstancedMesh，環繞玩家、雜湊定位） =====
@@ -671,11 +831,17 @@ function updatePlayerVisual(dt) {
   }
 
   p.animTime = (p.animTime || 0) + dt;
-  const bobAmp = p.moving ? 4 : 1.8;
-  const bob = Math.abs(Math.sin(p.animTime * (p.moving ? 9 : 3))) * bobAmp;
+  // P18：拉大移動/靜止時的 bob 對比，讓「有在動」更明顯（靜止幾乎不跳，移動時明顯彈跳）
+  const bobAmp = p.moving ? 6 : 1.2;
+  const bob = Math.abs(Math.sin(p.animTime * (p.moving ? 10 : 2.5))) * bobAmp;
 
   const faceLeft = ch.spriteFacesLeft ? p.facing > 0 : p.facing < 0;
   playerSprite.scale.x = Math.abs(playerSprite.scale.x) * (faceLeft ? -1 : 1);
+
+  // P18：依移動方向做輕微傾斜（跑動感），moveDirX/moveDirY 由 game.js 的 updatePlayer() 每幀寫入，
+  // 之前這兩個欄位存在但從未被讀取——這裡接上，緩動趨近目標角度避免瞬間跳動
+  const targetLean = p.moving ? clamp(-p.moveDirX * 0.16, -0.16, 0.16) : 0;
+  playerSprite.material.rotation += (targetLean - playerSprite.material.rotation) * Math.min(1, dt * 10);
 
   playerSprite.position.set(p.x, bob, p.y);
   playerShadow.position.set(p.x, 0.5, p.y);
@@ -1062,7 +1228,30 @@ export function applyScene(idx, instant = false) {
   }
   starPoints.visible = cfg.stars;
 
+  syncBgPhoto(cfgIdx);
+
   buildProps(cfg.props);
+}
+
+// P18：套用（或隱藏）目前場景對應的背景相片；獨立成函式供 applyScene 與 engineRenderInner 共用——
+// 相片是透過 game.js 的 loadImage() 非同步載入，切換場景當下圖片可能還沒下載完成，
+// 所以每幀也要輕量重新檢查一次，圖片一到位就自動補上，不需要等下次切換場景才生效
+function syncBgPhoto(cfgIdx) {
+  const bgKey = SCENE_BG_PHOTO_KEYS[cfgIdx];
+  const bgImg = bgKey && R.assetImages && R.assetImages[bgKey];
+  if (bgImg) {
+    if (bgPhotoLoadedKey !== bgKey) {
+      const tex = new THREE.Texture(bgImg);
+      tex.needsUpdate = true;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      bgPhotoMesh.material.map = tex;
+      bgPhotoMesh.material.needsUpdate = true;
+      bgPhotoLoadedKey = bgKey;
+    }
+    bgPhotoMesh.visible = true;
+  } else {
+    bgPhotoMesh.visible = false;
+  }
 }
 
 // 轉場：2 秒漸黑→切場景→漸亮，由 game.js 呼叫，onSwitch 在全黑點執行
@@ -1130,6 +1319,15 @@ export function worldToScreen(x, y, height = 30) {
 // ===== 主渲染 =====
 export function engineRender(dt) {
   if (!bootstrapped) return;
+  try {
+    engineRenderInner(dt);
+  } catch (err) {
+    // 任何一幀的 3D 同步/渲染出錯都不該讓主迴圈（含輸入處理）整個停擺，記一次錯誤後跳過這幀即可
+    console.error("[engine3d] 單幀渲染失敗，已跳過本幀", err);
+  }
+}
+
+function engineRenderInner(dt) {
   const st = R.state;
   const p = st.player;
   if (!p) return;
@@ -1159,6 +1357,11 @@ export function engineRender(dt) {
   if (celestialSprite.visible && celestialSprite.userData.cfg) {
     const c = celestialSprite.userData.cfg;
     celestialSprite.position.set(camCurrent.x + 500, c.height, camCurrent.z + c.dist);
+  }
+  syncBgPhoto(activeSceneIdx);
+  if (bgPhotoMesh.visible) {
+    // 跟隨攝影機重新置中，永遠鋪在角色腳下的可視地面範圍內（同 groundMesh 的置中邏輯）
+    bgPhotoMesh.position.set(camCurrent.x, 1, camCurrent.z);
   }
   reseedProps(camCurrent.x, camCurrent.z);
 
@@ -1195,11 +1398,16 @@ export function engineRender(dt) {
   if (tintStrength > tintTargetStrength) tintStrength = Math.max(tintTargetStrength, tintStrength - dt * 0.8);
   else if (tintStrength < tintTargetStrength) tintStrength = Math.min(tintTargetStrength, tintStrength + dt * 1.6);
 
-  gradePass.uniforms.uFade.value = fadeLevel;
-  gradePass.uniforms.uTint.value.copy(tintColor);
-  gradePass.uniforms.uTintStrength.value = tintStrength;
-
-  composer.render();
+  // composer 可能在初始化階段就建立失敗（見 initEngine 的內層 try/catch），此時退回最基本的直接渲染，
+  // 場景本身仍然完整可見，只是沒有 bloom/vignette/色調後製
+  if (composer && gradePass) {
+    gradePass.uniforms.uFade.value = fadeLevel;
+    gradePass.uniforms.uTint.value.copy(tintColor);
+    gradePass.uniforms.uTintStrength.value = tintStrength;
+    composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
 }
 
 // 遊戲重開時清空所有實體對照（避免殘留上一局的 3D 物件）
@@ -1229,4 +1437,48 @@ export function engineReset() {
   tintStrength = 0;
   tintTargetStrength = 0;
   pendingSwitch = null;
+}
+
+// Playwright／除錯用：暴露少量內部狀態供自動化測試檢查（不影響任何遊戲邏輯）
+export function __debugState() {
+  let screenCorners = null;
+  if (bgPhotoMesh && camera) {
+    const hw = 1200, hh = 1200; // 平面半寬高（2400x2400 的一半）
+    const localCorners = [
+      new THREE.Vector3(-hw, -hh, 0),
+      new THREE.Vector3(hw, -hh, 0),
+      new THREE.Vector3(hw, hh, 0),
+      new THREE.Vector3(-hw, hh, 0),
+      new THREE.Vector3(0, 0, 0),
+    ];
+    screenCorners = localCorners.map((v) => {
+      const world = v.clone().applyMatrix4(bgPhotoMesh.matrixWorld);
+      const proj = world.clone().project(camera);
+      return { world: world.toArray(), ndc: proj.toArray() };
+    });
+  }
+  let celestialNdc = null;
+  if (celestialSprite && camera && celestialSprite.visible) {
+    celestialNdc = celestialSprite.position.clone().project(camera).toArray();
+  }
+  return {
+    bgPhotoVisible: bgPhotoMesh ? bgPhotoMesh.visible : null,
+    bgPhotoLoadedKey,
+    bgPhotoPosition: bgPhotoMesh ? bgPhotoMesh.position.toArray() : null,
+    bgPhotoQuaternion: bgPhotoMesh ? bgPhotoMesh.quaternion.toArray() : null,
+    bgPhotoHasMap: !!(bgPhotoMesh && bgPhotoMesh.material.map),
+    bgPhotoRenderOrder: bgPhotoMesh ? bgPhotoMesh.renderOrder : null,
+    skyMeshRenderOrder: skyMesh ? skyMesh.renderOrder : null,
+    cameraPosition: camera ? camera.position.toArray() : null,
+    cameraFov: camera ? camera.fov : null,
+    celestialPosition: celestialSprite ? celestialSprite.position.toArray() : null,
+    celestialNdc,
+    screenCorners,
+    activeSceneIdx,
+  };
+}
+
+export function __projectPoint(x, y, z) {
+  if (!camera) return null;
+  return new THREE.Vector3(x, y, z).project(camera).toArray();
 }

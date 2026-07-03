@@ -9,6 +9,8 @@ import {
   setBossTint,
   fxLight,
   worldToScreen,
+  __debugState,
+  __projectPoint,
 } from "./engine3d.js";
 
 // ===== 常數設定 =====
@@ -44,6 +46,12 @@ function loadAssets() {
   loadImage("bingyun_card", "assets/characters/char_white_400.png");
   loadImage("bingyun_fx_basic", "assets/characters/fx_blue_basic_256.png");
   loadImage("bingyun_fx_ult", "assets/characters/fx_blue_ult_512.png");
+
+  // P18：天空/地平線背景相片（使用者提供）。走既有的安全載入模式——檔案不存在時 loadImage 只會
+  // console.warn，assetImages[key] 保持 undefined，engine3d.js 會自動退回目前的程序化天空漸層，零風險。
+  loadImage("bg_desert", "assets/backgrounds/desert.jpg");
+  loadImage("bg_bamboo", "assets/backgrounds/bamboo.jpg");
+  loadImage("bg_ruins", "assets/backgrounds/ruins.jpg");
 }
 
 const PLAYER_SPEED = 200; // px/秒
@@ -131,7 +139,9 @@ const ELITE_HP_MULT = 1.6;
 const ELITE_SCORE_MULT = 2.5;
 
 // 新怪種剛登場時的緩衝（只套用在 volley 身上，避免遠程攻擊一登場就太密集）
-const TYPE_FIRST_STAGE = { drifter: 0, skitter: 1, lurker: 2, volley: 3, juggernaut: 4 };
+// P18：新增 3 種輪廓明顯不同的敵人（尖刺魔/環爪魔/裂魂蟲），沿用既有行為邏輯（chase/kiter/ambush），
+// 只在視覺（engine3d.js 的新 make*Texture）與數值定位上做出區隔，不需要新的戰鬥邏輯
+const TYPE_FIRST_STAGE = { drifter: 0, skitter: 1, lurker: 2, volley: 3, juggernaut: 4, spiker: 5, ringer: 7, serpent: 9 };
 const VOLLEY_INTRO_BUFFER = [1.6, 1.3]; // 登場後頭 2 關的射擊間隔倍率，之後恢復 1x
 
 // 新怪種登場與 boss 生成解耦：該次 stage 轉換若引入新怪種池，延後 boss 生成，讓玩家先適應新怪
@@ -161,22 +171,39 @@ const ENEMY_TYPE_DEFS = {
     fireIntervalMs: 1800,
   },
   juggernaut: { hpMult: 2.6, speedMult: 0.45, touchMult: 1.8, radiusMult: 1.4, behavior: "chase" },
+  // P18：尖刺魔——高速衝撞型玻璃大砲，血少但速度極快，第6關登場
+  spiker: { hpMult: 0.45, speedMult: 1.9, touchMult: 1.1, radiusMult: 0.85, behavior: "chase" },
+  // P18：環爪魔——遠程牽制型，比 volley 更肉但射速較慢，第8關登場
+  ringer: { hpMult: 1.1, speedMult: 0.6, touchMult: 0.6, radiusMult: 1.1, behavior: "kiter", keepDistance: 180, fireIntervalMs: 2200 },
+  // P18：裂魂蟲——潛伏突襲型，比 lurker 更厚重的一擊，第10關登場
+  serpent: {
+    hpMult: 1.5,
+    speedMult: 0.95,
+    touchMult: 1.3,
+    radiusMult: 1.15,
+    behavior: "ambush",
+    triggerRadius: 150,
+    dashSpeedMult: 2.0,
+    warningSec: 0.5,
+  },
 };
 
 // 每關出場的一般小怪 pool（最多 2 種，新種類加入時淘汰最舊的一種）
+// P18：把原本第6-12關單純重複舊組合的部分，換成分批登場尖刺魔(第6關)/環爪魔(第8關)/裂魂蟲(第10關)，
+// 讓後段關卡也有新鮮感，呼應「敵人新造型」的回饋
 const STAGE_NORMAL_TYPE_POOL = [
   ["drifter"],
   ["drifter", "skitter"],
   ["skitter", "lurker"],
   ["lurker", "volley"],
   ["volley", "juggernaut"],
-  ["drifter", "juggernaut"],
+  ["drifter", "spiker"],
   ["skitter", "juggernaut"],
+  ["lurker", "ringer"],
   ["volley", "juggernaut"],
-  ["drifter", "lurker"],
-  ["skitter", "volley"],
-  ["lurker", "juggernaut"],
-  ["drifter", "volley"],
+  ["spiker", "serpent"],
+  ["ringer", "juggernaut"],
+  ["drifter", "serpent"],
 ];
 
 const ENEMY_VISUALS = {
@@ -186,6 +213,9 @@ const ENEMY_VISUALS = {
   volley: { core: "#9adcff", mid: "#1f7fae", edge: "#0a2a3a", glow: "#3ad6ff" },
   juggernaut: { core: "#ffaa55", mid: "#d9530a", edge: "#4d1a05", glow: "#ff6a00" },
   boss: { core: "#ffffff", mid: "#ff3344", edge: "#330008", glow: "#ff2244" },
+  spiker: { core: "#ffe0e0", mid: "#ff3355", edge: "#4a0a15", glow: "#ff2255" },
+  ringer: { core: "#e0f7ff", mid: "#3aa0d6", edge: "#0a2a3a", glow: "#4dc8ff" },
+  serpent: { core: "#e0ffd0", mid: "#5ad64a", edge: "#0f3a0a", glow: "#7aff4d" },
 };
 
 // 敵方彈道（遠程小怪 volley 專用）
@@ -237,7 +267,12 @@ const QI_GROWTH_RATE = 0.08;
 const AUTO_ATK_GROWTH_RATE = 0.05;
 
 // 技能表（被動）：環身罡氣／破空擲／引氣術／既有自動攻擊
-const SKILL_BASE_COST = { orbit: 15, throw: 18, magnet: 12, barrier: 20, vampire: 16, frenzy: 18 };
+// P18：新增 3 個技能延伸科技樹，把「全部點滿」的時間點往後推，同時錢有更多實際玩法差異的地方可花
+// （原本只需 793 內力珠、約 4.5-6 分鐘/第 6-7 關即可點滿全部 6 個技能，之後的錢完全沒有去處）
+const SKILL_BASE_COST = {
+  orbit: 15, throw: 18, magnet: 12, barrier: 20, vampire: 16, frenzy: 18,
+  windstep: 22, chainblast: 28, bladestorm: 25,
+};
 const SKILL_COST_GROWTH = 1.6;
 const ORBIT_BASE_COUNT = 2;
 const ORBIT_BASE_DAMAGE = 10;
@@ -252,6 +287,21 @@ const THROW_SPEED = 360;
 const THROW_TURN_RATE = 5;
 const THROW_RADIUS = 8;
 const THROW_BASE_PIERCE = 1;
+
+// 疾風步（機動類被動）：純移動速度加成，不動攻速/防禦數值，避免再壓低「幾乎不掉血」的問題
+const WINDSTEP_MOVESPEED_PER_LEVEL = 0.06; // 滿級（5）+30% 移速
+
+// 追魂爆（攻擊類主動）：定時觸發一次連鎖爆破，在鄰近敵人間跳躍傷害，等級越高跳躍次數越多
+const CHAIN_BLAST_BASE_DAMAGE = 14;
+const CHAIN_BLAST_BASE_INTERVAL_MS = 2600;
+const CHAIN_BLAST_JUMP_RADIUS = 140; // 每次跳躍搜尋下一個目標的半徑
+
+// 破空連斬（攻擊類主動）：定時向四面八方射出一輪貫穿刀氣，等級越高刀刃數越多、間隔越短
+const BLADESTORM_BASE_DAMAGE = 9;
+const BLADESTORM_BASE_INTERVAL_MS = 3400;
+const BLADESTORM_BASE_COUNT = 6;
+const BLADESTORM_SPEED = 260;
+const BLADESTORM_RADIUS = 9;
 
 const BARRIER_INTERVAL_BASE_SEC = 18;
 const BARRIER_INTERVAL_PER_LEVEL_SEC = 4; // 等級越高，護盾重新充能越快
@@ -273,6 +323,9 @@ const SKILL_COLORS = {
   barrier: "#ffd84d",
   vampire: "#ff4d6a",
   frenzy: "#c060ff",
+  windstep: "#4dff9e",
+  chainblast: "#e6ff4d",
+  bladestorm: "#ff5ecb",
 };
 
 // 技能上限與可購買性：homing 永遠釘選顯示、不可購買（透過一般升級卡強化）
@@ -284,12 +337,17 @@ const SKILL_DEFS = [
   { id: "barrier", name: "護體罡氣", baseDesc: "定時獲得一層護盾，吸收一次傷害", purchasable: true, maxLevel: 3 },
   { id: "vampire", name: "吸血掌", baseDesc: "擊殺敵人時有機率回復氣血", purchasable: true, maxLevel: 3 },
   { id: "frenzy", name: "狂狼之力", baseDesc: "氣血低於30%時大幅提升傷害", purchasable: true, maxLevel: 3 },
+  { id: "windstep", name: "疾風步", baseDesc: "永久提升移動速度", purchasable: true, maxLevel: 5 },
+  { id: "chainblast", name: "追魂爆", baseDesc: "定時引爆鄰近敵人並連鎖跳躍，等級越高跳躍數越多", purchasable: true, maxLevel: 5 },
+  { id: "bladestorm", name: "破空連斬", baseDesc: "定時向四面八方射出貫穿刀氣，等級越高刀刃越多", purchasable: true, maxLevel: 4 },
 ];
 
 // 每技能 base/perLevel 線性係數，取代統一的 skillScale；未列出者用預設值
 const SKILL_TUNING = {
   orbit: { perLevel: 0.36 }, // 滿級（5）≈2.8x 傷害
   throw: { perLevel: 0.4125 }, // 滿級（4）≈2.65x 傷害
+  chainblast: { perLevel: 0.35 }, // 滿級（5）≈2.75x 傷害
+  bladestorm: { perLevel: 0.3 }, // 滿級（4）≈2.9x 傷害
 };
 
 function skillMult(skillId, level) {
@@ -347,6 +405,7 @@ const CHARACTERS = [
     spriteKey: "yexuan",
     conceptKey: "yexuan_concept",
     spriteHeight: 72,
+    spriteFacesLeft: true,
     cardSrc: "assets/characters/char_purple_400.png",
     fxBasicKey: "yexuan_fx_basic",
     fxUltKey: "yexuan_fx_ult",
@@ -437,7 +496,7 @@ const UPGRADE_POOL = [
     stat: "移速 +15%",
     apply(p) {
       p.moveSpeedMult *= 1.15;
-      p.speed = PLAYER_SPEED * p.moveSpeedMult;
+      applyPlayerSpeed(p);
     },
   },
   {
@@ -579,6 +638,8 @@ function resetState(characterId) {
     currency: 0,
     orbitAngle: 0,
     throwTimer: THROW_BASE_INTERVAL_MS,
+    chainBlastTimer: CHAIN_BLAST_BASE_INTERVAL_MS,
+    bladestormTimer: BLADESTORM_BASE_INTERVAL_MS,
     vacuumPulseUntil: 0,
     dodgeChance: character.baseDodge,
     defense: character.defense,
@@ -600,6 +661,9 @@ function resetState(characterId) {
       barrier: { unlocked: false, level: 0 },
       vampire: { unlocked: false, level: 0 },
       frenzy: { unlocked: false, level: 0 },
+      windstep: { unlocked: false, level: 0 },
+      chainblast: { unlocked: false, level: 0 },
+      bladestorm: { unlocked: false, level: 0 },
     },
   };
   state.enemies = [];
@@ -867,19 +931,21 @@ function spawnQiVisualHitFx(proj, enemy) {
 function emitPlayerTrail(p, dt) {
   p.trailTimer -= dt * 1000;
   if (p.trailTimer > 0) return;
-  p.trailTimer = 80;
+  p.trailTimer = 70;
 
+  // P18：加大尺寸＋開啟 glow，讓移動時的氣勁殘影在 3D 加色混合渲染下更明顯可辨，
+  // 強化「角色正在移動」的視覺回饋（呼應使用者反映動作不夠明顯的回報）
   spawnParticle({
     x: p.x - p.facing * 6,
     y: p.y + p.h / 2 - 4,
     vx: 0,
     vy: 0,
-    life: 0.25,
-    maxLife: 0.25,
-    size: 4,
-    color: "rgba(58,214,255,0.5)",
+    life: 0.3,
+    maxLife: 0.3,
+    size: 5,
+    color: "rgba(58,214,255,0.6)",
     type: "playerTrail",
-    glow: false,
+    glow: true,
   });
 }
 
@@ -1487,7 +1553,27 @@ function getSkillEffect(skillId, field) {
   if (skillId === "barrier") {
     if (field === "interval") return Math.max(6, BARRIER_INTERVAL_BASE_SEC - level * BARRIER_INTERVAL_PER_LEVEL_SEC);
   }
+  if (skillId === "windstep") {
+    if (field === "moveSpeedMult") return 1 + level * WINDSTEP_MOVESPEED_PER_LEVEL;
+  }
+  if (skillId === "chainblast") {
+    if (field === "damage") return Math.round(CHAIN_BLAST_BASE_DAMAGE * skillMult("chainblast", level));
+    if (field === "interval") return CHAIN_BLAST_BASE_INTERVAL_MS;
+    if (field === "jumps") return 1 + level;
+  }
+  if (skillId === "bladestorm") {
+    if (field === "damage") return Math.round(BLADESTORM_BASE_DAMAGE * skillMult("bladestorm", level));
+    if (field === "interval") return Math.max(1400, BLADESTORM_BASE_INTERVAL_MS - level * 300);
+    if (field === "count") return BLADESTORM_BASE_COUNT + level;
+  }
   return 0;
+}
+
+// 疾風步：把所有移動速度來源（升級卡疊乘的 moveSpeedMult ＋ 疾風步等級加成）彙整成最終速度，
+// 供升級卡與技能升級兩處共用，避免各自獨立相乘造成重複套用或彼此覆蓋
+function applyPlayerSpeed(p) {
+  const windstepMult = p.skills.windstep && p.skills.windstep.unlocked ? getSkillEffect("windstep", "moveSpeedMult") : 1;
+  p.speed = PLAYER_SPEED * p.moveSpeedMult * windstepMult;
 }
 
 function getSkillUpgradeCost(skillId, level) {
@@ -1512,6 +1598,9 @@ function trySkillUpgrade(skillId) {
   skill.unlocked = true;
   if (skillId === "barrier") {
     p.barrierTimer = getSkillEffect("barrier", "interval");
+  }
+  if (skillId === "windstep") {
+    applyPlayerSpeed(p);
   }
   playLevelUpSound();
   renderSkillMenu();
@@ -1767,6 +1856,33 @@ function fireHomingVolley(p, target, count, damage, speed, turnRate, radius, kin
       homing: true,
       turnRate,
       target,
+      kind,
+      color: opts.color,
+      imgKey: opts.imgKey,
+      visualType: opts.visualType,
+      length: opts.length,
+      width: opts.width,
+      coreColor: opts.coreColor,
+      hitColor: opts.hitColor,
+      pierceRemaining: p.pierceCount || 0,
+      hitSet: new Set(),
+    });
+  }
+}
+
+// 破空連斬專用：不追蹤目標，均勻朝四面八方發射一輪彈道（結構與 fireHomingVolley 相同，
+// 差異只在 homing:false 且角度平均分布 360 度，不需要指定目標）
+function fireRadialBurst(p, count, damage, speed, radius, kind, opts = {}) {
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count;
+    state.projectiles.push({
+      x: p.x,
+      y: p.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius,
+      damage,
+      homing: false,
       kind,
       color: opts.color,
       imgKey: opts.imgKey,
@@ -2103,6 +2219,62 @@ function updateThrowSkill(dt) {
   }
 }
 
+// 追魂爆：定時在最近敵人身上引爆，並在附近敵人間連鎖跳躍傷害（跳躍次數隨等級增加）
+function updateChainBlast(dt) {
+  const p = state.player;
+  if (!p.skills.chainblast.unlocked) return;
+  p.chainBlastTimer -= dt * 1000;
+  if (p.chainBlastTimer > 0) return;
+
+  const target = findNearestEnemy(p.x, p.y);
+  if (!target) {
+    p.chainBlastTimer = 100;
+    return;
+  }
+  p.chainBlastTimer = getSkillEffect("chainblast", "interval");
+  const damage = getSkillEffect("chainblast", "damage");
+  const maxJumps = getSkillEffect("chainblast", "jumps");
+
+  const visited = new Set();
+  let current = target;
+  let hops = 0;
+  while (current && hops < maxJumps) {
+    applyDamage(current, damage);
+    spawnDamageText(current.x, current.y - current.radius, damage);
+    spawnExplosion(current.x, current.y, "#e6ff4d", 12);
+    spawnShockwave(current.x, current.y, 40, "#e6ff4d");
+    fxLight(current.x, current.y, "#e6ff4d", 2, 260, 300);
+    playHitSound();
+    visited.add(current);
+    hops += 1;
+
+    let next = null;
+    let bestDist = CHAIN_BLAST_JUMP_RADIUS;
+    for (const e of state.enemies) {
+      if (visited.has(e)) continue;
+      const d = distance(current, e);
+      if (d < bestDist) {
+        bestDist = d;
+        next = e;
+      }
+    }
+    current = next;
+  }
+}
+
+// 破空連斬：定時向四面八方射出一輪貫穿刀氣（刀刃數與間隔隨等級增加/縮短）
+function updateBladestorm(dt) {
+  const p = state.player;
+  if (!p.skills.bladestorm.unlocked) return;
+  p.bladestormTimer -= dt * 1000;
+  if (p.bladestormTimer > 0) return;
+  p.bladestormTimer = getSkillEffect("bladestorm", "interval");
+  const damage = getSkillEffect("bladestorm", "damage");
+  const count = getSkillEffect("bladestorm", "count");
+  playQiFireSound();
+  fireRadialBurst(p, count, damage, BLADESTORM_SPEED, BLADESTORM_RADIUS, "bladestorm", { color: "#ff5ecb" });
+}
+
 // ===== P17 新系統：分裂菁英／Boss 寶箱／勝利結算／技能進化／永久成長／本地紀錄 =====
 
 // 分裂菁英死亡時產生 2 隻縮小版小怪
@@ -2315,8 +2487,8 @@ function applyMetaToPlayer(p) {
   }
   if (speedLv > 0) {
     p.moveSpeedMult *= 1 + speedLv * 0.015;
-    p.speed = PLAYER_SPEED * p.moveSpeedMult;
   }
+  applyPlayerSpeed(p);
 }
 
 function tryMetaUpgrade(defId) {
@@ -2540,7 +2712,15 @@ function showStageBanner(title, sub) {
 
 function getStageSubtitle(stageIdx) {
   const introduced = STAGE_NORMAL_TYPE_POOL[stageIdx].find((t) => TYPE_FIRST_STAGE[t] === stageIdx);
-  const names = { skitter: "疾行魔影現身", lurker: "伏擊妖物潛藏", volley: "遠射邪祟來襲", juggernaut: "重甲巨魔壓境" };
+  const names = {
+    skitter: "疾行魔影現身",
+    lurker: "伏擊妖物潛藏",
+    volley: "遠射邪祟來襲",
+    juggernaut: "重甲巨魔壓境",
+    spiker: "尖刺魔急襲來犯",
+    ringer: "環爪魔遠遁伺機",
+    serpent: "裂魂蟲潛伏出沒",
+  };
   if (introduced && names[introduced]) return names[introduced];
   if (stageIdx === ELITE_START_STAGE) return "菁英強敵開始出沒";
   if (stageIdx === STAGE_CONFIGS.length - 1) return "最終決戰";
@@ -2668,21 +2848,26 @@ function updateEnemies(dt) {
       e.x += Math.cos(ang) * e.speed * dt;
       e.y += Math.sin(ang) * e.speed * dt;
     } else if (e.behavior === "ambush") {
-      if (!e.ambushTriggered && dist < ENEMY_TYPE_DEFS.lurker.triggerRadius) {
+      // P18：改用該敵人自己 baseType 對應的 typeDef，不再寫死讀 lurker——
+      // 現在 serpent（裂魂蟲）也是 ambush 行為，需要各自的觸發半徑/衝刺倍率/預警時間
+      const ambushDef = ENEMY_TYPE_DEFS[e.baseType] || ENEMY_TYPE_DEFS.lurker;
+      if (!e.ambushTriggered && dist < ambushDef.triggerRadius) {
         e.ambushTriggered = true;
         e.ambushWarning = true;
-        e.ambushWarningTimer = ENEMY_TYPE_DEFS.lurker.warningSec;
+        e.ambushWarningTimer = ambushDef.warningSec;
       }
       if (e.ambushWarning) {
         e.ambushWarningTimer -= dt;
         if (e.ambushWarningTimer <= 0) e.ambushWarning = false;
       } else if (e.ambushTriggered) {
-        const dashSpeed = e.speed * ENEMY_TYPE_DEFS.lurker.dashSpeedMult;
+        const dashSpeed = e.speed * ambushDef.dashSpeedMult;
         e.x += nx * dashSpeed * dt;
         e.y += ny * dashSpeed * dt;
       }
     } else if (e.behavior === "kiter") {
-      const keepDistance = ENEMY_TYPE_DEFS.volley.keepDistance;
+      // P18：同理改用該敵人自己 baseType 對應的 keepDistance，不再寫死讀 volley——
+      // 現在 ringer（環爪魔）也是 kiter 行為，牽制距離與 volley 不同
+      const keepDistance = (ENEMY_TYPE_DEFS[e.baseType] || ENEMY_TYPE_DEFS.volley).keepDistance;
       if (dist > keepDistance + 20) {
         e.x += nx * e.speed * dt;
         e.y += ny * e.speed * dt;
@@ -3242,6 +3427,8 @@ function update(dt, timestamp) {
   updateAutoAttack(dt);
   updateOrbiters(dt);
   updateThrowSkill(dt);
+  updateChainBlast(dt);
+  updateBladestorm(dt);
   updateBarrier(dt);
   updatePalmRecharge(dt);
   updateEnemySpawning(timestamp);
@@ -3284,8 +3471,15 @@ function gameLoop(timestamp) {
     return;
   }
 
-  update(dt, timestamp);
-  render(dt);
+  // P18：update/render 包一層防護——任何一幀（尤其是 3D 渲染層）萬一拋出未預期例外，
+  // 若不攔截會讓這次 requestAnimationFrame 回呼提前結束，導致下面重新排程 RAF 的那行永遠不會執行，
+  // 主迴圈（連同輸入處理）就此整個停死。攔截後只記錄錯誤、跳過本幀，下一幀繼續正常運作。
+  try {
+    update(dt, timestamp);
+    render(dt);
+  } catch (err) {
+    console.error("[gameLoop] 本幀更新/渲染發生例外，已跳過本幀繼續運作", err);
+  }
   requestAnimationFrame(gameLoop);
 }
 
@@ -3335,6 +3529,10 @@ window.__game = {
   getXiuwei,
   getBgmIntensity,
   applyScene,
+  applyPlayerSpeed,
+  getSkillUpgradeCost,
+  __debugState,
+  __projectPoint,
 };
 lastTime = performance.now();
 requestAnimationFrame(gameLoop);
