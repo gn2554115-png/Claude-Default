@@ -3266,7 +3266,32 @@ function startGameWithCharacter(id) {
 }
 
 // ===== UI 更新 =====
+// 選單類 UI（技能表／升級卡／勝利結算）開啟時，讓整組觸控層讓位（CSS body.ui-modal 隱藏），
+// 否則 fixed 的 #joystick-capture 與動作鈕會疊在選單上攔截點擊。進入選單同時歸零搖桿輸入——
+// 觸控層被隱藏後收不到 pointerup，不清掉的話關閉選單會殘留移動向量。
+let uiModalPrev = false;
+function syncUiModal() {
+  const modal = state.skillMenuOpen || state.upgradeChoices.length > 0 || state.victoryPause;
+  if (modal === uiModalPrev) return;
+  uiModalPrev = modal;
+  document.body.classList.toggle("ui-modal", modal);
+  if (modal) {
+    const j = state.joystick;
+    j.active = false;
+    j.pointerId = null;
+    j.dx = 0;
+    j.dy = 0;
+    j.knobX = 0;
+    j.knobY = 0;
+    const zone = document.getElementById("joystick-zone");
+    zone.style.left = "";
+    zone.style.top = "";
+    zone.style.bottom = "";
+  }
+}
+
 function updateUI() {
+  syncUiModal();
   const p = state.player;
   const hp = Math.max(0, p.hp);
   document.getElementById("score").textContent = `分數: ${state.score}`;

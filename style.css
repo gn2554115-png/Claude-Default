@@ -538,14 +538,23 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  /* 內容（角色卡＋紀錄＋試煉面板）比畫布高：靠上排列＋垂直捲動，不能用 center（會把頂部裁到摸不到） */
+  justify-content: flex-start;
   align-items: center;
-  gap: 22px;
+  gap: 14px;
+  padding: 18px 0 30px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: rgba(5, 5, 10, 0.92);
   color: #fff;
   text-align: center;
   z-index: 80;
-  touch-action: none;
+  touch-action: pan-y; /* 允許單指上下捲動（全域是 none，這裡是唯一要捲的畫面） */
+}
+
+/* 子項不許被 flex 壓縮——內容比 800px 高時要「保持原尺寸＋捲動」，而不是被壓扁 */
+#character-select > * {
+  flex-shrink: 0;
 }
 
 #character-select.hidden {
@@ -568,6 +577,7 @@ body {
 
 .character-card {
   pointer-events: auto;
+  flex-shrink: 0; /* 不許壓縮：塞不下就換行，配合 #character-select 的捲動 */
   width: 150px;
   min-height: 210px;
   background: rgba(20, 20, 30, 0.9);
@@ -785,6 +795,12 @@ body {
 }
 
 body:not(.game-active) #touch-controls {
+  display: none !important;
+}
+
+/* 技能表／升級卡／勝利結算等選單開啟時，整組觸控層（浮動搖桿捕捉層＋動作鈕）讓位：
+   #touch-controls 是 fixed 疊在 #game-container 之上的獨立堆疊層，不隱藏的話會攔截選單的點擊 */
+body.ui-modal #touch-controls {
   display: none !important;
 }
 
