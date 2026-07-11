@@ -660,13 +660,24 @@ body {
   }
 }
 
+/* P19：浮動搖桿觸控層——左側 45% 螢幕任一點按下即喚出搖桿（實際事件綁在這層，圓盤只是視覺） */
+#joystick-capture {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 45%;
+  pointer-events: auto;
+  touch-action: none;
+}
+
 #joystick-zone {
   position: fixed;
   left: max(16px, env(safe-area-inset-left));
   bottom: max(16px, env(safe-area-inset-bottom));
   width: 110px;
   height: 110px;
-  pointer-events: auto;
+  pointer-events: none; /* P19：改由 #joystick-capture 接收輸入，圓盤純顯示 */
   touch-action: none;
 }
 
@@ -978,4 +989,15 @@ body:not(.game-active) #touch-controls {
 .meta-buy-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.meta-row.trial-selected {
+  background: rgba(160, 64, 255, 0.14);
+  border-top-color: rgba(192, 96, 255, 0.5);
+  box-shadow: inset 0 0 10px rgba(160, 64, 255, 0.2);
+  border-radius: 8px;
+}
+
+.meta-row.trial-selected .meta-name {
+  color: #d9a8ff;
 }

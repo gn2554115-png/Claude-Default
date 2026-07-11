@@ -47,11 +47,13 @@ function loadAssets() {
   loadImage("bingyun_fx_basic", "assets/characters/fx_blue_basic_256.png");
   loadImage("bingyun_fx_ult", "assets/characters/fx_blue_ult_512.png");
 
-  // P18：天空/地平線背景相片（使用者提供）。走既有的安全載入模式——檔案不存在時 loadImage 只會
-  // console.warn，assetImages[key] 保持 undefined，engine3d.js 會自動退回目前的程序化天空漸層，零風險。
-  loadImage("bg_desert", "assets/backgrounds/desert.jpg");
-  loadImage("bg_bamboo", "assets/backgrounds/bamboo.jpg");
-  loadImage("bg_ruins", "assets/backgrounds/ruins.jpg");
+  // P19：五場景全螢幕背景相片（使用者提供）。走既有的安全載入模式——檔案不存在時 loadImage 只會
+  // console.warn，assetImages[key] 保持 undefined，engine3d.js 會自動退回程序化場景（天空/地面/道具），零風險。
+  loadImage("bg_autumn", "assets/backgrounds/autumn.jpg");
+  loadImage("bg_snow", "assets/backgrounds/snow.jpg");
+  loadImage("bg_floating", "assets/backgrounds/floating.jpg");
+  loadImage("bg_storm", "assets/backgrounds/storm.jpg");
+  loadImage("bg_inferno", "assets/backgrounds/inferno.jpg");
 }
 
 const PLAYER_SPEED = 200; // px/秒
@@ -106,7 +108,7 @@ const ENEMY_BRUTE_SCORE_MULT = 2;
 // 關卡制難度：每 STAGE_DURATION_SEC 秒跳一級，離散調整而非連續內插
 // 數值曲線改為平滑指數遞增（相鄰關卡跳幅 ~15-22%），避免單一關卡轉換疊加過多難度因子
 const STAGE_DURATION_SEC = 45;
-const MIN_SPAWN_INTERVAL_MS = 220;
+const MIN_SPAWN_INTERVAL_MS = 200; // P19：220→200
 // P15：原曲線血量到第8關達 2.83x 疊加 powerScale 後遠超玩家傷害成長速度，是「打不死」根因之一，
 // 故下修血量成長曲線（1.0→2.2，原為1.0→2.83）；出怪間隔曲線不變，靠下方 MAX_ALIVE_ENEMIES 數量上限解決lag。
 // P16：第8關為原硬上限，玩家回饋「練滿技能仍卡關」；根因是 getPowerScaleFactor() 同時驅動敵人血量與出怪頻率，
@@ -121,10 +123,11 @@ const STAGE_CONFIGS = [
   { spawnInterval: 420, hpMult: 1.8, bruteChance: 0.38 },
   { spawnInterval: 330, hpMult: 2.0, bruteChance: 0.44 },
   { spawnInterval: 260, hpMult: 2.2, bruteChance: 0.5 },
-  { spawnInterval: 245, hpMult: 2.4, bruteChance: 0.55 },
-  { spawnInterval: 235, hpMult: 2.6, bruteChance: 0.58 },
-  { spawnInterval: 225, hpMult: 2.8, bruteChance: 0.6 },
-  { spawnInterval: 220, hpMult: 3.0, bruteChance: 0.62 },
+  // P19：末四關 bruteChance 上調（0.55/0.58/0.60/0.62 → 0.60/0.65/0.68/0.72），後期壓力明顯化
+  { spawnInterval: 245, hpMult: 2.4, bruteChance: 0.6 },
+  { spawnInterval: 235, hpMult: 2.6, bruteChance: 0.65 },
+  { spawnInterval: 225, hpMult: 2.8, bruteChance: 0.68 },
+  { spawnInterval: 220, hpMult: 3.0, bruteChance: 0.72 },
 ];
 
 // 同時存在敵人數上限：超過此數時暫停出怪（既有敵人不會被強制移除），避免後期關卡無限疊加造成嚴重lag
@@ -132,8 +135,8 @@ const MAX_ALIVE_ENEMIES = 70;
 
 // P17：菁英怪詞綴——第4關（index 3）起，通過 brute 判定之外另擲 10% 機率成為菁英
 // swift=疾速（藍光）、split=分裂（綠光，死亡分裂2小怪）、blast=爆炸（橘光，死亡自爆傷玩家）
-const ELITE_START_STAGE = 3;
-const ELITE_CHANCE = 0.1;
+const ELITE_START_STAGE = 2; // P19：3→2，菁英更早出現
+const ELITE_CHANCE = 0.16; // P19：0.10→0.16
 const ELITE_TYPES = ["swift", "split", "blast"];
 const ELITE_HP_MULT = 1.6;
 const ELITE_SCORE_MULT = 2.5;
@@ -218,9 +221,10 @@ const ENEMY_VISUALS = {
   serpent: { core: "#e0ffd0", mid: "#5ad64a", edge: "#0f3a0a", glow: "#7aff4d" },
 };
 
-// 敵方彈道（遠程小怪 volley 專用）
-const ENEMY_PROJECTILE_SPEED = 150;
-const ENEMY_PROJECTILE_DAMAGE = 7;
+// 敵方彈道（遠程小怪 volley/ringer 與最終Boss彈幕共用）
+// P19：彈速上調、傷害改為發射時隨玩家成長係數計算（原本寫死 7 點打到後期完全無感）
+const ENEMY_PROJECTILE_SPEED = 170;
+const ENEMY_PROJECTILE_DAMAGE = 7; // 基準值，實際傷害 = 基準 × (1 + (powerScale-1) × 0.5)
 const ENEMY_PROJECTILE_RADIUS = 6;
 
 // Boss 關卡
@@ -311,8 +315,12 @@ const VAMPIRE_CHANCE_PER_LEVEL = 0.12;
 const VAMPIRE_HEAL_BASE = 5;
 const VAMPIRE_HEAL_PER_LEVEL = 3;
 const VAMPIRE_FX_DURATION = 400; // 吸血觸發時角色身上綠色光暈的持續時間（毫秒）
-const FRENZY_HP_THRESHOLD = 0.3;
-const FRENZY_DMG_PER_LEVEL = 0.15;
+// P19：狂狼之力改造「擊殺疊狂」——原本血量<30%才觸發，但玩家幾乎不掉血導致技能形同虛設；
+// 改為擊殺疊層加傷、限時維持：持續殺戮=持續狂化，停手就消退，任何血量都有意義
+const FRENZY_STACK_WINDOW_MS = 4000; // 每次擊殺刷新的維持時間
+const FRENZY_BASE_MAX_STACKS = 4; // 疊層上限 = 4 + 等級×2（滿級3 → 10層）
+const FRENZY_STACKS_PER_LEVEL = 2;
+const FRENZY_DMG_PER_STACK_PER_LEVEL = 0.025; // 每層傷害加成 = 0.025×等級（滿級滿層 ≈ +75%）
 
 // 每個技能對應一個代表色，用於商店列左側色條／點陣，讓玩家能用顏色快速分辨技能性質
 const SKILL_COLORS = {
@@ -336,7 +344,7 @@ const SKILL_DEFS = [
   { id: "magnet", name: "引氣術", baseDesc: "擴大內力珠的吸引範圍", purchasable: true, maxLevel: 4 },
   { id: "barrier", name: "護體罡氣", baseDesc: "定時獲得一層護盾，吸收一次傷害", purchasable: true, maxLevel: 3 },
   { id: "vampire", name: "吸血掌", baseDesc: "擊殺敵人時有機率回復氣血", purchasable: true, maxLevel: 3 },
-  { id: "frenzy", name: "狂狼之力", baseDesc: "氣血低於30%時大幅提升傷害", purchasable: true, maxLevel: 3 },
+  { id: "frenzy", name: "狂狼之力", baseDesc: "擊殺疊層提升傷害（限時維持，持續殺戮保持狂化）", purchasable: true, maxLevel: 3 },
   { id: "windstep", name: "疾風步", baseDesc: "永久提升移動速度", purchasable: true, maxLevel: 5 },
   { id: "chainblast", name: "追魂爆", baseDesc: "定時引爆鄰近敵人並連鎖跳躍，等級越高跳躍數越多", purchasable: true, maxLevel: 5 },
   { id: "bladestorm", name: "破空連斬", baseDesc: "定時向四面八方射出貫穿刀氣，等級越高刀刃越多", purchasable: true, maxLevel: 4 },
@@ -590,6 +598,9 @@ const state = {
   killStreak: 0,
   killStreakUntil: 0,
   stageBannerUntil: 0,
+  trialMods: { tier: 0, hpMult: 1, dmgMult: 1, scoreMult: 1, dropMult: 1 },
+  curses: [],
+  altars: [],
 };
 
 function resetState(characterId) {
@@ -648,6 +659,8 @@ function resetState(characterId) {
     blockFlashUntil: 0,
     vampireFxUntil: 0,
     frenzyParticleTimer: 0,
+    frenzyStacks: 0,
+    frenzyStackUntil: 0,
     // P17：技能進化系統
     cardCounts: {},
     orbitEvolved: false,
@@ -677,6 +690,8 @@ function resetState(characterId) {
   state.orbiters = [];
   state.drops = [];
   state.chests = [];
+  state.curses = [];
+  state.altars = [];
   state.orbitHitMap = new Map();
   state.score = 0;
   state.kills = 0;
@@ -711,7 +726,7 @@ function resetState(characterId) {
   state.killStreakUntil = 0;
   state.stageBannerUntil = 0;
 
-  applyMetaToPlayer(state.player);
+  snapshotTrialMods();
   engineReset();
   applyScene(STAGE_SCENE_INDEX[0], true);
   setBossTint(false);
@@ -764,6 +779,10 @@ function applyDamage(entity, dmg) {
   if (entity === state.player && tryAbsorbWithBarrier(entity)) {
     spawnPickupText(entity.x, entity.y - entity.radius - 6, "格擋!", true);
     return false;
+  }
+  if (entity === state.player) {
+    // P19：試煉階敵傷倍率——統一在唯一的傷害入口套用，涵蓋碰撞/彈道/Boss衝擊波所有來源
+    dmg = Math.round(dmg * state.trialMods.dmgMult);
   }
   if (entity === state.player && entity.defense > 0) {
     dmg = Math.max(1, dmg - entity.defense);
@@ -994,6 +1013,8 @@ function rollCurrencyDrop(e) {
   let amount = CURRENCY_DROP_MIN + Math.floor(Math.random() * (CURRENCY_DROP_MAX - CURRENCY_DROP_MIN + 1));
   if (e.isBrute) amount *= CURRENCY_BRUTE_DROP_MULT;
   if (isBoss) amount *= BOSS_DROP_MULT;
+  // P19：試煉掉落倍率＋詛咒層數加成（每層 +10%）——高風險高報酬的核心迴圈
+  amount = Math.max(1, Math.round(amount * state.trialMods.dropMult * (1 + state.curses.length * 0.1)));
   spawnCurrencyDrop(e.x, e.y, amount);
 }
 
@@ -1127,11 +1148,15 @@ const BGM_TEMPO_BOSS = 118; // BPM，boss 戰更緊湊
 const BGM_PATTERN = [0, 2, 1, 3, 2, 4, 3, 1];
 const BGM_PATTERN_BOSS = [4, 3, 4, 1, 3, 0, 3, 2, 4, 2, 1, 3]; // boss 戰更密集緊張的音型
 
-// 三場景各自的五聲調式與鼓組密度：沙漠 G 徵、竹林 D 羽、遺跡 A 商
+// P19 五場景各自的五聲調式與鼓組密度：
+// 楓落古鎮 G 徵（暖）、雪月神居 D 羽（清冷）、浮空遺境 A 商（空靈）、
+// 紫雷絕壁 E 角（緊張）、血焰魔域低音快板（終章壓迫感）
 const BGM_MODES = [
-  { scale: [196.0, 220.0, 246.94, 293.66, 329.63], drumDensity: 1.0 },
-  { scale: [146.83, 174.61, 196.0, 220.0, 261.63], drumDensity: 0.7 },
-  { scale: [220.0, 246.94, 293.66, 329.63, 392.0], drumDensity: 1.2 },
+  { scale: [196.0, 220.0, 246.94, 293.66, 329.63], drumDensity: 0.9 },
+  { scale: [146.83, 174.61, 196.0, 220.0, 261.63], drumDensity: 0.6 },
+  { scale: [220.0, 246.94, 293.66, 329.63, 392.0], drumDensity: 0.8 },
+  { scale: [164.81, 196.0, 220.0, 261.63, 293.66], drumDensity: 1.2 },
+  { scale: [130.81, 155.56, 174.61, 196.0, 233.08], drumDensity: 1.4 },
 ];
 
 function getBgmMode() {
@@ -1959,12 +1984,23 @@ function tryVampireHeal() {
   }
 }
 
-// 狂狼之力：氣血低於門檔時提升掌技／氣彈／自動攻擊傷害
+// 狂狼之力（擊殺疊狂）：擊殺疊層提升掌技／氣彈／自動攻擊傷害，限時維持
 function getEnrageMult(p) {
   const skill = p.skills.frenzy;
   if (!skill.unlocked || skill.level <= 0) return 1;
-  if (p.hp / p.maxHp >= FRENZY_HP_THRESHOLD) return 1;
-  return 1 + skill.level * FRENZY_DMG_PER_LEVEL;
+  if (performance.now() >= p.frenzyStackUntil || p.frenzyStacks <= 0) return 1;
+  return 1 + p.frenzyStacks * FRENZY_DMG_PER_STACK_PER_LEVEL * skill.level;
+}
+
+// 擊殺時疊狂：每殺一隻+1層（有上限）、刷新維持時間；在敵人死亡結算處呼叫
+function addFrenzyStack(p) {
+  const skill = p.skills.frenzy;
+  if (!skill.unlocked || skill.level <= 0) return;
+  const now = performance.now();
+  if (now >= p.frenzyStackUntil) p.frenzyStacks = 0; // 已過期，重新起算
+  const maxStacks = FRENZY_BASE_MAX_STACKS + skill.level * FRENZY_STACKS_PER_LEVEL;
+  p.frenzyStacks = Math.min(maxStacks, p.frenzyStacks + 1);
+  p.frenzyStackUntil = now + FRENZY_STACK_WINDOW_MS;
 }
 
 function getQiDamage() {
@@ -2373,6 +2409,82 @@ function updateChests() {
   });
 }
 
+// ===== P19 詛咒祭壇（risk-reward：玩家自選加難換獎勵）=====
+// 針對「遊戲太簡單、後期沒事做」的核心回饋——把難度的方向盤交給玩家：
+// 接受詛咒讓本局敵人永久更強，換取立即的內力珠/分數獎勵，且每層詛咒使之後的掉落 +10%
+const CURSE_DEFS = [
+  { id: "curse_hp", name: "血煞之咒", desc: "敵人氣血 +30%", hpMult: 1.3 },
+  { id: "curse_speed", name: "疾影之咒", desc: "敵人移速 +15%", speedMult: 1.15 },
+  { id: "curse_spawn", name: "湧潮之咒", desc: "出怪速度 +20%", spawnIntervalMult: 0.8 },
+  { id: "curse_elite", name: "梟首之咒", desc: "菁英出現率 +10%", eliteBonus: 0.1 },
+];
+const ALTAR_START_STAGE = 2; // 第 3 關（index 2）起出現
+const ALTAR_REWARD_MIN = 60;
+const ALTAR_REWARD_MAX = 120;
+
+// 彙總所有已接受詛咒的修飾子（乘法疊乘、加法疊加）
+function getCurseMods() {
+  const mods = { hpMult: 1, speedMult: 1, spawnIntervalMult: 1, eliteBonus: 0 };
+  for (const curse of state.curses) {
+    if (curse.hpMult) mods.hpMult *= curse.hpMult;
+    if (curse.speedMult) mods.speedMult *= curse.speedMult;
+    if (curse.spawnIntervalMult) mods.spawnIntervalMult *= curse.spawnIntervalMult;
+    if (curse.eliteBonus) mods.eliteBonus += curse.eliteBonus;
+  }
+  return mods;
+}
+
+function spawnCurseAltar() {
+  const p = state.player;
+  const angle = Math.random() * Math.PI * 2;
+  const dist = 300 + Math.random() * 150;
+  state.altars.push({
+    x: p.x + Math.cos(angle) * dist,
+    y: p.y + Math.sin(angle) * dist,
+    bobPhase: Math.random() * Math.PI * 2,
+  });
+}
+
+function buildAltarChoices() {
+  const curse = CURSE_DEFS[Math.floor(Math.random() * CURSE_DEFS.length)];
+  const reward = ALTAR_REWARD_MIN + Math.floor(Math.random() * (ALTAR_REWARD_MAX - ALTAR_REWARD_MIN + 1));
+  return [
+    {
+      id: "altar_accept",
+      name: `接受詛咒：${curse.name}`,
+      stat: `${curse.desc}（本局永久）｜立得內力珠 +${reward}、之後掉落 +10%`,
+      apply(pl) {
+        state.curses.push(curse);
+        pl.currency += reward;
+        state.score += reward * 2;
+        spawnPickupText(pl.x, pl.y - 30, reward);
+        showStageBanner("詛咒纏身", `${curse.name}——${curse.desc}`);
+        playBossDeathSound();
+      },
+    },
+    {
+      id: "altar_refuse",
+      name: "敬而遠之",
+      stat: "不接受任何詛咒，祭壇歸於沉寂",
+      apply() {},
+    },
+  ];
+}
+
+function updateAltars() {
+  const p = state.player;
+  state.altars = state.altars.filter((altar) => {
+    altar.bobPhase += 0.04;
+    if (distance(p, altar) < 30 + p.radius) {
+      playPickupSound();
+      state.upgradeChoices = buildAltarChoices();
+      renderUpgradeCards();
+      return false;
+    }
+    return true;
+  });
+}
+
 // ===== 技能進化（滿級技能＋指定升級卡數量 → 升級卡池出現金色進化卡） =====
 const EVOLUTION_DEFS = [
   {
@@ -2445,12 +2557,16 @@ function triggerVictory() {
   playLevelUpSound();
 }
 
-// ===== 永久成長（修為，localStorage 跨局保存） =====
-const META_DEFS = [
-  { id: "atk", name: "拳勁修為", desc: "初始攻擊 +2%/級", maxLevel: 5, baseCost: 40 },
-  { id: "hp", name: "內息修為", desc: "初始體力 +10/級", maxLevel: 5, baseCost: 40 },
-  { id: "speed", name: "身法修為", desc: "移速 +1.5%/級", maxLevel: 5, baseCost: 40 },
+// ===== 修為與試煉階（P19 改造）=====
+// 原本修為是花錢買永久攻擊/血量/移速加成——玩家正確指出這會讓已經很簡單的遊戲更簡單。
+// 改為「難度試煉解鎖」：修為只用來解鎖更高難度的試煉階（敵人更血更痛、分數與掉落更高），
+// 追求挑戰與高分，而不是變強的捷徑。舊檔的 meta_levels 永久加成直接作廢不再讀取。
+const TRIAL_DEFS = [
+  { tier: 1, name: "試煉一・風波", cost: 150, hpMult: 1.25, dmgMult: 1.25, scoreMult: 1.5, dropMult: 1.2, desc: "敵血/敵傷 +25%｜分數 ×1.5｜掉落 ×1.2" },
+  { tier: 2, name: "試煉二・浪湧", cost: 400, hpMult: 1.5, dmgMult: 1.5, scoreMult: 2, dropMult: 1.35, desc: "敵血/敵傷 +50%｜分數 ×2｜掉落 ×1.35" },
+  { tier: 3, name: "試煉三・滅世", cost: 900, hpMult: 1.8, dmgMult: 1.8, scoreMult: 3, dropMult: 1.5, desc: "敵血/敵傷 +80%｜分數 ×3｜掉落 ×1.5" },
 ];
+const TRIAL_NEUTRAL = { tier: 0, hpMult: 1, dmgMult: 1, scoreMult: 1, dropMult: 1 };
 
 function getXiuwei() {
   return parseInt(localStorage.getItem("meta_xiuwei") || "0", 10);
@@ -2460,50 +2576,36 @@ function addXiuwei(amount) {
   localStorage.setItem("meta_xiuwei", String(getXiuwei() + amount));
 }
 
-function getMetaLevels() {
-  try {
-    return JSON.parse(localStorage.getItem("meta_levels") || "{}");
-  } catch (e) {
-    return {};
-  }
+function getTrialsUnlocked() {
+  return parseInt(localStorage.getItem("trials_unlocked") || "0", 10);
 }
 
-function getMetaCost(def, level) {
-  return Math.round(def.baseCost * Math.pow(1.6, level));
+function getTrialSelected() {
+  const sel = parseInt(localStorage.getItem("trial_selected") || "0", 10);
+  return Math.min(sel, getTrialsUnlocked()); // 防呆：不可選未解鎖的階
 }
 
-function applyMetaToPlayer(p) {
-  const levels = getMetaLevels();
-  const atkLv = levels.atk || 0;
-  const hpLv = levels.hp || 0;
-  const speedLv = levels.speed || 0;
-  if (atkLv > 0) {
-    p.atkDamage = Math.round(p.atkDamage * (1 + atkLv * 0.02));
-    p.atkMult *= 1 + atkLv * 0.02;
-  }
-  if (hpLv > 0) {
-    p.maxHp += hpLv * 10;
-    p.hp = p.maxHp;
-  }
-  if (speedLv > 0) {
-    p.moveSpeedMult *= 1 + speedLv * 0.015;
-  }
-  applyPlayerSpeed(p);
-}
-
-function tryMetaUpgrade(defId) {
-  const def = META_DEFS.find((d) => d.id === defId);
-  if (!def) return;
-  const levels = getMetaLevels();
-  const level = levels[defId] || 0;
-  if (level >= def.maxLevel) return;
-  const cost = getMetaCost(def, level);
-  if (getXiuwei() < cost) return;
-  addXiuwei(-cost);
-  levels[defId] = level + 1;
-  localStorage.setItem("meta_levels", JSON.stringify(levels));
+function tryUnlockTrial(tier) {
+  const def = TRIAL_DEFS.find((d) => d.tier === tier);
+  if (!def || getTrialsUnlocked() >= tier) return;
+  if (getTrialsUnlocked() < tier - 1) return; // 需依序解鎖
+  if (getXiuwei() < def.cost) return;
+  addXiuwei(-def.cost);
+  localStorage.setItem("trials_unlocked", String(tier));
   playLevelUpSound();
   renderMetaPanel();
+}
+
+function selectTrial(tier) {
+  if (tier > getTrialsUnlocked()) return;
+  localStorage.setItem("trial_selected", String(tier));
+  renderMetaPanel();
+}
+
+// 開局時快照選定的試煉修飾子到 state（局中改選單不影響進行中的一局）
+function snapshotTrialMods() {
+  const sel = getTrialSelected();
+  state.trialMods = TRIAL_DEFS.find((d) => d.tier === sel) || TRIAL_NEUTRAL;
 }
 
 function renderMetaPanel() {
@@ -2511,23 +2613,37 @@ function renderMetaPanel() {
   if (!list) return;
   document.getElementById("meta-currency").textContent = `修為: ${getXiuwei()}`;
   list.innerHTML = "";
-  const levels = getMetaLevels();
-  for (const def of META_DEFS) {
-    const level = levels[def.id] || 0;
+  const unlocked = getTrialsUnlocked();
+  const selected = getTrialSelected();
+
+  const rows = [{ tier: 0, name: "標準武林", desc: "原始難度，無任何加成", cost: 0 }, ...TRIAL_DEFS];
+  for (const def of rows) {
     const row = document.createElement("div");
     row.className = "meta-row";
-    const maxed = level >= def.maxLevel;
-    const cost = getMetaCost(def, level);
-    row.innerHTML = `<span class="meta-name">${def.name} Lv.${level}/${def.maxLevel}</span><span class="meta-desc">${def.desc}</span>`;
+    row.innerHTML = `<span class="meta-name">${def.name}</span><span class="meta-desc">${def.desc}</span>`;
     const btn = document.createElement("button");
     btn.className = "meta-buy-btn";
-    btn.textContent = maxed ? "已圓滿" : `修煉 ${cost}`;
-    btn.disabled = maxed || getXiuwei() < cost;
-    btn.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      tryMetaUpgrade(def.id);
-    });
+    const isUnlocked = def.tier <= unlocked;
+    if (def.tier === selected) {
+      btn.textContent = "已選擇";
+      btn.disabled = true;
+      row.classList.add("trial-selected");
+    } else if (isUnlocked) {
+      btn.textContent = "選擇";
+      btn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        selectTrial(def.tier);
+      });
+    } else {
+      btn.textContent = `解鎖 ${def.cost}修為`;
+      btn.disabled = getXiuwei() < def.cost || def.tier > unlocked + 1;
+      btn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        tryUnlockTrial(def.tier);
+      });
+    }
     row.appendChild(btn);
     list.appendChild(row);
   }
@@ -2597,17 +2713,18 @@ function spawnEnemy() {
 
   const isBrute = Math.random() < stageConfig.bruteChance;
   const eliteType =
-    !isBrute && state.stage >= ELITE_START_STAGE && Math.random() < ELITE_CHANCE
+    !isBrute && state.stage >= ELITE_START_STAGE && Math.random() < ELITE_CHANCE + getCurseMods().eliteBonus
       ? ELITE_TYPES[Math.floor(Math.random() * ELITE_TYPES.length)]
       : null;
-  const baseHp = ENEMY_MAX_HP * stageConfig.hpMult * typeDef.hpMult * hpScale;
+  const baseHp = ENEMY_MAX_HP * stageConfig.hpMult * typeDef.hpMult * hpScale * state.trialMods.hpMult * getCurseMods().hpMult;
   const hp = Math.round(baseHp * (isBrute ? ENEMY_BRUTE_HP_MULT : 1) * (eliteType ? ELITE_HP_MULT : 1));
   const radius = Math.round(ENEMY_RADIUS * typeDef.radiusMult * (isBrute ? ENEMY_BRUTE_RADIUS_MULT : 1) * (eliteType ? 1.15 : 1));
-  const speed = ENEMY_SPEED * typeDef.speedMult * (isBrute ? ENEMY_BRUTE_SPEED_MULT : 1) * (eliteType === "swift" ? 1.6 : 1);
+  const speed = ENEMY_SPEED * typeDef.speedMult * (isBrute ? ENEMY_BRUTE_SPEED_MULT : 1) * (eliteType === "swift" ? 1.6 : 1) * getCurseMods().speedMult;
+  // P19：碰撞傷害成長係數 0.4→0.65（明顯上調），讓中後期沒護盾時真的會痛
   const touchDamage = Math.round(
-    ENEMY_TOUCH_DAMAGE * typeDef.touchMult * (isBrute ? ENEMY_BRUTE_TOUCH_MULT : 1) * (1 + (powerScale - 1) * 0.4)
+    ENEMY_TOUCH_DAMAGE * typeDef.touchMult * (isBrute ? ENEMY_BRUTE_TOUCH_MULT : 1) * (1 + (powerScale - 1) * 0.65)
   );
-  const killScore = Math.round(KILL_SCORE * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1) * (eliteType ? ELITE_SCORE_MULT : 1));
+  const killScore = Math.round(KILL_SCORE * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1) * (eliteType ? ELITE_SCORE_MULT : 1) * state.trialMods.scoreMult);
   const killXp = Math.round(KILL_XP * (isBrute ? ENEMY_BRUTE_SCORE_MULT : 1) * (eliteType ? 2 : 1));
 
   state.enemies.push({
@@ -2656,7 +2773,7 @@ function spawnBoss(stageIndex, isFinal = false) {
   const hpScale = getEnemyHpScaleFactor();
   // 最終 Boss：血量 2 倍、體型放大、攻擊間隔縮短並具備雙攻擊模式（衝擊波＋彈幕）
   const hpMultFinal = isFinal ? 2 : 1;
-  const hp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult * BOSS_HP_MULT * hpScale * hpMultFinal);
+  const hp = Math.round(ENEMY_MAX_HP * stageConfig.hpMult * BOSS_HP_MULT * hpScale * hpMultFinal * state.trialMods.hpMult * getCurseMods().hpMult);
 
   state.enemies.push({
     x,
@@ -2671,7 +2788,7 @@ function spawnBoss(stageIndex, isFinal = false) {
     maxHp: hp,
     speed: ENEMY_SPEED * (isFinal ? 0.5 : 0.6),
     touchDamage: Math.round(ENEMY_TOUCH_DAMAGE * BOSS_TOUCH_MULT * (isFinal ? 1.3 : 1)),
-    killScore: KILL_SCORE * BOSS_SCORE_MULT * (isFinal ? 4 : 1),
+    killScore: Math.round(KILL_SCORE * BOSS_SCORE_MULT * (isFinal ? 4 : 1) * state.trialMods.scoreMult),
     killXp: KILL_XP * BOSS_XP_MULT,
     hurtUntil: 0,
     particleTimer: 0,
@@ -2692,7 +2809,7 @@ function spawnBoss(stageIndex, isFinal = false) {
 
 function getEnemySpawnInterval() {
   const base = STAGE_CONFIGS[state.stage].spawnInterval;
-  return Math.max(MIN_SPAWN_INTERVAL_MS, Math.round(base / getPowerScaleFactor()));
+  return Math.max(MIN_SPAWN_INTERVAL_MS, Math.round((base * getCurseMods().spawnIntervalMult) / getPowerScaleFactor()));
 }
 
 // 關卡進場橫幅：大字標題＋副標（新要素提示），2.2 秒後淡出（CSS 動畫）
@@ -2745,6 +2862,11 @@ function updateStage(dt) {
       });
     } else {
       showStageBanner(`第 ${nextStage + 1} 關`, getStageSubtitle(nextStage));
+    }
+
+    // P19：詛咒祭壇——第 3 關起每次關卡轉換生成一座（未觸碰的舊祭壇保留在原地）
+    if (nextStage >= ALTAR_START_STAGE) {
+      spawnCurseAltar();
     }
 
     if (nextStage >= 1 && !state.bossActive) {
@@ -2824,7 +2946,9 @@ function updateEnemies(dt) {
         fxLight(e.x, e.y, "#ff2244", 2.2, 420, 520);
         triggerShake(0.25, 12);
         if (dist < BOSS_SHOCK_RADIUS + p.radius && now > p.invulnUntil) {
-          if (applyDamage(p, BOSS_SHOCK_DAMAGE)) {
+          // P19：Boss 衝擊波傷害隨玩家成長係數上調，後期 Boss 戰不再無關痛癢
+          const shockDmg = Math.round(BOSS_SHOCK_DAMAGE * (1 + (getPowerScaleFactor() - 1) * 0.5));
+          if (applyDamage(p, shockDmg)) {
             p.invulnUntil = now + PLAYER_IFRAME_MS;
             playHurtSound();
           }
@@ -2904,6 +3028,7 @@ function updateEnemies(dt) {
       addXp(e.killXp);
       rollCurrencyDrop(e);
       tryVampireHeal();
+      addFrenzyStack(p);
 
       // 菁英死亡效果
       if (e.eliteType === "split") {
@@ -2978,7 +3103,7 @@ function spawnEnemyProjectile(e, nx, ny) {
     vx: nx * ENEMY_PROJECTILE_SPEED,
     vy: ny * ENEMY_PROJECTILE_SPEED,
     radius: ENEMY_PROJECTILE_RADIUS,
-    damage: ENEMY_PROJECTILE_DAMAGE,
+    damage: Math.round(ENEMY_PROJECTILE_DAMAGE * (1 + (getPowerScaleFactor() - 1) * 0.5)),
   });
 }
 
@@ -3159,7 +3284,10 @@ function updateUI() {
   const mins = Math.floor(state.elapsed / 60);
   const secs = Math.floor(state.elapsed % 60);
   document.getElementById("timer-text").textContent = `${mins}:${String(secs).padStart(2, "0")}`;
-  document.getElementById("stage-text").textContent = `關卡 ${state.stage + 1}`;
+  // P19：顯示試煉階與詛咒層數
+  const trialTag = state.trialMods.tier > 0 ? `・試煉${["", "一", "二", "三"][state.trialMods.tier]}` : "";
+  const curseTag = state.curses.length > 0 ? `・詛咒×${state.curses.length}` : "";
+  document.getElementById("stage-text").textContent = `關卡 ${state.stage + 1}${trialTag}${curseTag}`;
 
   document.getElementById("palm-charges").textContent =
     "●".repeat(p.palmCharges) + "○".repeat(Math.max(0, p.palmMaxCharges - p.palmCharges));
@@ -3235,13 +3363,19 @@ const PARALLAX_CONFIG = {
 };
 
 
-// 三組輪替場景：沙漠黃昏／竹林夜月／古城門遺跡夜景，每 1-2 關切換一次
+// P19：五組輪替場景，依氛圍推進：楓落古鎮→雪月神居→浮空遺境→紫雷絕壁→血焰魔域（終章）
 // 場景資料（僅保留名稱供關卡橫幅使用；視覺配置全在 engine3d.js 的 SCENE3D）
-const SCENES = [{ name: "沙漠黃昏" }, { name: "竹林夜月" }, { name: "古城遺跡夜景" }];
+const SCENES = [
+  { name: "楓落古鎮" },
+  { name: "雪月神居" },
+  { name: "浮空遺境" },
+  { name: "紫雷絕壁" },
+  { name: "血焰魔域" },
+];
 
 
-// P17：每 4 關一個場景（1-4 沙漠黃昏、5-8 竹林夜月、9-12 遺跡夜景），跨場景時觸發轉場演出
-const STAGE_SCENE_INDEX = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2];
+// P19：1-3 楓落古鎮、4-6 雪月神居、7-8 浮空遺境、9-10 紫雷絕壁、11-12 血焰魔域，跨場景時觸發轉場演出
+const STAGE_SCENE_INDEX = [0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4];
 const GROUND_DECOR_SPACING = 110;
 function render(dt) {
   engineRender(dt || 0.016);
@@ -3289,7 +3423,7 @@ function updateGameScale() {
 }
 
 // ===== 觸控控制：圓形虛擬搖桿 =====
-const JOYSTICK_MAX_DIST = 33;
+const JOYSTICK_MAX_DIST = 40; // P19：加大有效行程，配合浮動搖桿提升操控精度
 const JOYSTICK_SENSITIVITY_CURVE = 0.6;
 
 function drawJoystick() {
@@ -3332,24 +3466,25 @@ function drawJoystick() {
   joystickCtx.restore();
 }
 
+// P19：浮動搖桿——不再要求先摸到固定位置的小圓盤。左側 45% 螢幕任一點按下即以觸點為錨點出現搖桿，
+// 拖曳相對錨點計算方向；放開後圓盤退回預設角落並歸零。解決「方向要一直重新滑動」的手感問題。
 function bindJoystick() {
-  const cx = joystickCanvas.width / 2;
-  const cy = joystickCanvas.height / 2;
+  const captureEl = document.getElementById("joystick-capture");
+  const zone = document.getElementById("joystick-zone");
+  const half = joystickCanvas.width / 2;
+  let anchorX = 0;
+  let anchorY = 0;
 
   function updateFromEvent(e) {
-    const rect = joystickCanvas.getBoundingClientRect();
-    const scaleX = joystickCanvas.width / rect.width;
-    const scaleY = joystickCanvas.height / rect.height;
-    const localX = (e.clientX - rect.left) * scaleX;
-    const localY = (e.clientY - rect.top) * scaleY;
-    const dx = localX - cx;
-    const dy = localY - cy;
+    // #touch-controls 是 position:fixed 全視窗、不受 #game-container 縮放影響，clientX/Y 可直接使用
+    const dx = e.clientX - anchorX;
+    const dy = e.clientY - anchorY;
     const dist = Math.sqrt(dx * dx + dy * dy);
     const clamped = Math.min(dist, JOYSTICK_MAX_DIST);
     const angle = Math.atan2(dy, dx);
     state.joystick.knobX = Math.cos(angle) * clamped;
     state.joystick.knobY = Math.sin(angle) * clamped;
-    const mag = Math.pow(clamped / JOYSTICK_MAX_DIST, JOYSTICK_SENSITIVITY_CURVE);
+    const mag = dist < 2 ? 0 : Math.pow(clamped / JOYSTICK_MAX_DIST, JOYSTICK_SENSITIVITY_CURVE);
     state.joystick.dx = Math.cos(angle) * mag;
     state.joystick.dy = Math.sin(angle) * mag;
   }
@@ -3358,8 +3493,16 @@ function bindJoystick() {
     e.preventDefault();
     state.joystick.active = true;
     state.joystick.pointerId = e.pointerId;
+    anchorX = e.clientX;
+    anchorY = e.clientY;
+    // 圓盤移到觸點處（clamp 在視窗內，避免貼邊時圓盤被切掉一半）
+    const zx = Math.max(0, Math.min(window.innerWidth - joystickCanvas.width, e.clientX - half));
+    const zy = Math.max(0, Math.min(window.innerHeight - joystickCanvas.height, e.clientY - half));
+    zone.style.left = `${zx}px`;
+    zone.style.top = `${zy}px`;
+    zone.style.bottom = "auto";
     try {
-      joystickCanvas.setPointerCapture(e.pointerId);
+      captureEl.setPointerCapture(e.pointerId);
     } catch (err) {
       // ignore unsupported environments
     }
@@ -3381,15 +3524,32 @@ function bindJoystick() {
     state.joystick.knobY = 0;
     state.joystick.dx = 0;
     state.joystick.dy = 0;
+    // 圓盤退回預設角落（清空 inline style，回歸 CSS 定位）
+    zone.style.left = "";
+    zone.style.top = "";
+    zone.style.bottom = "";
   }
 
-  joystickCanvas.addEventListener("pointerdown", onDown);
-  joystickCanvas.addEventListener("pointermove", onMove);
-  joystickCanvas.addEventListener("pointerup", onUp);
-  joystickCanvas.addEventListener("pointercancel", onUp);
+  captureEl.addEventListener("pointerdown", onDown);
+  captureEl.addEventListener("pointermove", onMove);
+  captureEl.addEventListener("pointerup", onUp);
+  captureEl.addEventListener("pointercancel", onUp);
 }
 
+// P19：按住連發——pointerdown 立即觸發一次後，按住期間每 130ms 自動重複觸發，
+// 不必再狂點；掌技充能與氣勁冷卻本身就會節流，重複呼叫是安全的
+const ACTION_REPEAT_MS = 130;
+
 function bindActionButton(btn, triggerFn) {
+  let repeatTimer = null;
+
+  function stopRepeat() {
+    if (repeatTimer) {
+      clearInterval(repeatTimer);
+      repeatTimer = null;
+    }
+  }
+
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     btn.classList.add("pressed");
@@ -3401,13 +3561,22 @@ function bindActionButton(btn, triggerFn) {
     if (!state.started) return;
     if (state.gameOver) {
       resetAndStart();
-    } else if (!state.skillMenuOpen) {
+      return;
+    }
+    if (!state.skillMenuOpen) {
       triggerFn();
+      stopRepeat();
+      repeatTimer = setInterval(() => {
+        if (state.started && !state.gameOver && !state.skillMenuOpen && state.upgradeChoices.length === 0) {
+          triggerFn();
+        }
+      }, ACTION_REPEAT_MS);
     }
   });
   const release = (e) => {
     e.preventDefault();
     btn.classList.remove("pressed");
+    stopRepeat();
   };
   btn.addEventListener("pointerup", release);
   btn.addEventListener("pointercancel", release);
@@ -3438,6 +3607,7 @@ function update(dt, timestamp) {
   updateSpirals(dt);
   updateDrops(dt);
   updateChests();
+  updateAltars();
   updateParticles(dt);
   updateDamageTexts(dt);
   updatePickupTexts(dt);
@@ -3527,6 +3697,18 @@ window.__game = {
   buildChestChoices,
   selectUpgrade,
   getXiuwei,
+  addXiuwei,
+  getTrialsUnlocked,
+  getTrialSelected,
+  tryUnlockTrial,
+  selectTrial,
+  TRIAL_DEFS,
+  getCurseMods,
+  CURSE_DEFS,
+  spawnCurseAltar,
+  addFrenzyStack,
+  getEnrageMult,
+  getPowerScaleFactor,
   getBgmIntensity,
   applyScene,
   applyPlayerSpeed,

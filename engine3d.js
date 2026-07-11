@@ -21,42 +21,69 @@ const CAM_DIST = 980;
 const CAM_FOV = 46;
 
 // ===== 場景 3D 配置（與 game.js SCENES 平行，以 index 對應）=====
+// P19 五場景：楓落古鎮→雪月神居→浮空遺境→紫雷絕壁→血焰魔域。
+// 有背景照片時這裡只負責霧色/燈光/飄塵氛圍；照片缺席時整組程序化世界（天空/地面/道具）自動補位。
+// groundStyle 對映地面 shader 的三種紋理（0 沙紋、1 苔蘚、2 石板），五場景循環套用。
 const SCENE3D = [
   {
-    // 沙漠黃昏
-    skyTop: 0x35201a, skyMid: 0xc9784a, skyBottom: 0xffb066,
-    fogColor: 0x8a4f2e, fogNear: 700, fogFar: 2400,
-    groundA: 0x6b4a28, groundB: 0x4a3018, groundAccent: 0x8a6a3a,
-    ambient: 0x7a5a48, ambientIntensity: 1.15,
-    dir: 0xffb066, dirIntensity: 1.35,
-    dust: 0xe6b478,
-    celestial: { color: 0xffd9a0, size: 150, height: 620, dist: -1400 },
+    // 楓落古鎮（暖橙暮色、落葉飄塵）
+    skyTop: 0x2a1a12, skyMid: 0xb4562a, skyBottom: 0xffa25a,
+    fogColor: 0x7a3a20, fogNear: 700, fogFar: 2400,
+    groundA: 0x6a3a20, groundB: 0x3f2210, groundAccent: 0xc25a2a,
+    ambient: 0x8a5a40, ambientIntensity: 1.15,
+    dir: 0xffb066, dirIntensity: 1.3,
+    dust: 0xffb478,
+    celestial: { color: 0xffd9a0, size: 140, height: 620, dist: -1400 },
     stars: false,
-    props: "rocks",
+    props: "rocks", groundStyle: 0,
   },
   {
-    // 竹林夜月
-    skyTop: 0x0a1430, skyMid: 0x1c2a55, skyBottom: 0x34406a,
-    fogColor: 0x14243a, fogNear: 620, fogFar: 2200,
-    groundA: 0x16240f, groundB: 0x0a120a, groundAccent: 0x2c4a20,
-    ambient: 0x3a5570, ambientIntensity: 1.0,
-    dir: 0xbdd8ff, dirIntensity: 1.0,
-    dust: 0xdcffd2,
+    // 雪月神居（冷藍月夜、雪白地面、雪花飄塵）
+    skyTop: 0x0a1430, skyMid: 0x243a5f, skyBottom: 0x5a789a,
+    fogColor: 0x2a3c52, fogNear: 620, fogFar: 2200,
+    groundA: 0x8299b2, groundB: 0x5a6c84, groundAccent: 0xb8c8da,
+    ambient: 0x7286a0, ambientIntensity: 1.1,
+    dir: 0xcfe0ff, dirIntensity: 1.05,
+    dust: 0xffffff,
     celestial: { color: 0xeef4ff, size: 110, height: 680, dist: -1500 },
     stars: true,
-    props: "bamboo",
+    props: "bamboo", groundStyle: 1,
   },
   {
-    // 古城遺跡夜景
-    skyTop: 0x10101c, skyMid: 0x241f30, skyBottom: 0x463a4a,
-    fogColor: 0x241d2c, fogNear: 600, fogFar: 2100,
-    groundA: 0x2a2422, groundB: 0x14110f, groundAccent: 0x4a3c34,
-    ambient: 0x554455, ambientIntensity: 1.05,
-    dir: 0xd8b0a0, dirIntensity: 0.95,
-    dust: 0xb45a5a,
+    // 浮空遺境（青碧空靈、殘柱浮石）
+    skyTop: 0x0c1a24, skyMid: 0x1d3a4a, skyBottom: 0x3f6a72,
+    fogColor: 0x24444e, fogNear: 600, fogFar: 2100,
+    groundA: 0x2a3c3a, groundB: 0x14201e, groundAccent: 0x4a7a6a,
+    ambient: 0x4a7080, ambientIntensity: 1.05,
+    dir: 0xa0e0d8, dirIntensity: 1.0,
+    dust: 0x9fe8dc,
     celestial: null,
     stars: true,
-    props: "ruins",
+    props: "ruins", groundStyle: 2,
+  },
+  {
+    // 紫雷絕壁（紫電暗夜、岩壁）
+    skyTop: 0x140a24, skyMid: 0x2a1a4a, skyBottom: 0x4a2a6a,
+    fogColor: 0x2a1a3e, fogNear: 600, fogFar: 2000,
+    groundA: 0x2a2234, groundB: 0x161020, groundAccent: 0x5a3a7a,
+    ambient: 0x5a4a7a, ambientIntensity: 1.0,
+    dir: 0xb08aff, dirIntensity: 1.1,
+    dust: 0xc0a0ff,
+    celestial: null,
+    stars: true,
+    props: "rocks", groundStyle: 0,
+  },
+  {
+    // 血焰魔域（終章：血紅烈焰、餘燼飄塵）
+    skyTop: 0x1a0505, skyMid: 0x4a100a, skyBottom: 0x8a2410,
+    fogColor: 0x3a0e08, fogNear: 580, fogFar: 1900,
+    groundA: 0x3a1410, groundB: 0x1c0806, groundAccent: 0x7a2a14,
+    ambient: 0x7a3a2a, ambientIntensity: 1.1,
+    dir: 0xff6a3a, dirIntensity: 1.25,
+    dust: 0xff8a5a,
+    celestial: { color: 0xff6a3a, size: 120, height: 600, dist: -1400 },
+    stars: false,
+    props: "ruins", groundStyle: 2,
   },
 ];
 
@@ -338,10 +365,9 @@ function makeSprite(texture, color, additive = false) {
 
 // ===== 世界物件 =====
 let groundMesh, skyMesh, celestialSprite, starPoints;
-let bgPhotoMesh = null;
 let bgPhotoLoadedKey = null;
 // P18：場景 index → 使用者可提供的背景相片 assetImages key（沿用 game.js 既有的 loadImage/assetImages 模式）
-const SCENE_BG_PHOTO_KEYS = ["bg_desert", "bg_bamboo", "bg_ruins"];
+const SCENE_BG_PHOTO_KEYS = ["bg_autumn", "bg_snow", "bg_floating", "bg_storm", "bg_inferno"];
 let ambientLight, dirLight;
 let propGroups = {}; // 每種 prop 一個 InstancedMesh
 let propSeedCenter = { x: Infinity, z: Infinity };
@@ -421,7 +447,6 @@ export function initEngine(refs) {
 
     buildGround();
     buildSky();
-    buildBgPhoto();
     buildParticles();
     buildDust();
     buildPlayerRig();
@@ -579,25 +604,36 @@ function buildSky() {
   scene.add(starPoints);
 }
 
-// P18：使用者提供的背景相片——原規劃是貼在天空球內側的「地平線背景」，但實測發現這個俯角相機
-// （58° 俯視）視錐幾乎全程只看得到地面，天空範圍在畫面上實際不可見（連原本的日月 celestialSprite
-// 投影出來也一樣落在畫面外），所以改用「跟隨攝影機重新置中的地面相片疊層」——比照 groundMesh
-// 本身「每幀重新置中到 camCurrent」的做法，永遠鋪在角色腳下的可視地面範圍內，不會有貼圖平鋪接縫，
-// 也不受這個相機視角限制，保證使用者提供的照片一定看得到。未提供圖片時保持 visible=false 不影響原本地面。
-function buildBgPhoto() {
-  const geo = new THREE.PlaneGeometry(2400, 2400);
-  const mat = new THREE.MeshBasicMaterial({
-    transparent: true,
-    opacity: 0.92,
-    depthWrite: false,
-    fog: true, // 讓照片邊緣自然融入場景霧氣，避免與程序化地面的銜接過於突兀
-    side: THREE.DoubleSide,
-  });
-  bgPhotoMesh = new THREE.Mesh(geo, mat);
-  bgPhotoMesh.rotation.x = -Math.PI / 2; // 平躺於地面（XZ 平面），與 groundMesh 相同的攤平方式
-  bgPhotoMesh.position.y = 1; // 略高於程序化地面，depthTest 時天然更靠近攝影機，避免 z-fighting
-  bgPhotoMesh.visible = false;
-  scene.add(bgPhotoMesh);
+// P19：使用者提供的背景相片改為 scene.background 全螢幕靜態呈現（推翻 P18 的地面貼片作法）。
+// 照片是 9:16 直式構圖、有自己的透視，鋪在地上會扭曲；直接當整個畫面的背景最忠實。
+// 不依賴 scene.background 的 uvTransform 支援度：一次性把照片 cover-fit 裁繪進 offscreen canvas，
+// 之後零每幀成本。畫布 450x800（9:16），照片同比例時幾乎無裁切。
+function makeCoverBackgroundTexture(img) {
+  const cw = 900;
+  const chh = Math.round((cw * H) / W);
+  const cv = document.createElement("canvas");
+  cv.width = cw;
+  cv.height = chh;
+  const c = cv.getContext("2d");
+  const s = Math.max(cw / img.width, chh / img.height);
+  const dw = img.width * s;
+  const dh = img.height * s;
+  c.drawImage(img, (cw - dw) / 2, (chh - dh) / 2, dw, dh);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// 照片背景作用中 → 隱藏整組程序化世界（地面/天穹/星空/日月/場景道具），
+// 它們有自己的透視與地平線，疊在照片上只會互相打架；照片缺席時完整還原（fallback 保證可玩）。
+// 實體（角色/敵人/彈道/影子/粒子/飄塵）一律保留，站在照片前仍有完整的戰鬥回饋。
+function setProceduralWorldVisible(on) {
+  const cfg = SCENE3D[Math.max(0, activeSceneIdx)];
+  groundMesh.visible = on;
+  skyMesh.visible = on;
+  starPoints.visible = on && !!(cfg && cfg.stars);
+  celestialSprite.visible = on && !!(cfg && cfg.celestial);
+  for (const key in propGroups) propGroups[key].visible = on;
 }
 
 // ===== 場景道具（InstancedMesh，環繞玩家、雜湊定位） =====
@@ -822,6 +858,8 @@ function updatePlayerVisual(dt) {
     } else {
       tex = makePlayerFallbackTexture(ch);
     }
+    // P19：面向翻轉改用貼圖 UV 鏡像（repeat.x = ±1），需要 RepeatWrapping 才能取樣負向座標
+    tex.wrapS = THREE.RepeatWrapping;
     playerSprite.material.map = tex;
     playerSprite.material.needsUpdate = true;
     playerTexKey = wantKey + (img ? "_img" : "_fb");
@@ -831,17 +869,22 @@ function updatePlayerVisual(dt) {
   }
 
   p.animTime = (p.animTime || 0) + dt;
-  // P18：拉大移動/靜止時的 bob 對比，讓「有在動」更明顯（靜止幾乎不跳，移動時明顯彈跳）
-  const bobAmp = p.moving ? 6 : 1.2;
-  const bob = Math.abs(Math.sin(p.animTime * (p.moving ? 10 : 2.5))) * bobAmp;
+  // P19：搖擺回饋過重被玩家否決，收斂為幾乎不可察覺的輕微起伏
+  const bobAmp = p.moving ? 2 : 1.2;
+  const bob = Math.abs(Math.sin(p.animTime * (p.moving ? 6 : 2.5))) * bobAmp;
 
+  // P19：面向翻轉——THREE.Sprite 的頂點著色器以 length(modelMatrix[i].xyz) 取 scale（恆為正值），
+  // 負的 scale.x 在畫面上完全無效（P17/P18 的翻面寫法因此從未真正生效過），
+  // 改為翻轉貼圖 UV：repeat.x = -1 搭配 offset.x = 1 即為水平鏡像，對 SpriteMaterial 的 uvTransform 有效
   const faceLeft = ch.spriteFacesLeft ? p.facing > 0 : p.facing < 0;
-  playerSprite.scale.x = Math.abs(playerSprite.scale.x) * (faceLeft ? -1 : 1);
-
-  // P18：依移動方向做輕微傾斜（跑動感），moveDirX/moveDirY 由 game.js 的 updatePlayer() 每幀寫入，
-  // 之前這兩個欄位存在但從未被讀取——這裡接上，緩動趨近目標角度避免瞬間跳動
-  const targetLean = p.moving ? clamp(-p.moveDirX * 0.16, -0.16, 0.16) : 0;
-  playerSprite.material.rotation += (targetLean - playerSprite.material.rotation) * Math.min(1, dt * 10);
+  const map = playerSprite.material.map;
+  if (map) {
+    const wantRepeat = faceLeft ? -1 : 1;
+    if (map.repeat.x !== wantRepeat) {
+      map.repeat.x = wantRepeat;
+      map.offset.x = faceLeft ? 1 : 0;
+    }
+  }
 
   playerSprite.position.set(p.x, bob, p.y);
   playerShadow.position.set(p.x, 0.5, p.y);
@@ -1053,6 +1096,46 @@ function syncChests() {
   }
 }
 
+// ===== P19 詛咒祭壇（暗紫方尖碑＋紫光環＋光柱，與金色寶箱明顯區隔） =====
+const altarMap = new Map();
+function syncAltars() {
+  const now = performance.now();
+  for (const altar of R.state.altars || []) {
+    let rig = altarMap.get(altar);
+    if (!rig) {
+      const obelisk = new THREE.Mesh(
+        new THREE.CylinderGeometry(4, 10, 46, 4),
+        new THREE.MeshLambertMaterial({ color: 0x2a1040, emissive: 0x5a1a8a, emissiveIntensity: 0.55 })
+      );
+      const ring = flatMesh(TEX.ring, 0xa040ff);
+      ring.position.y = 2;
+      const beam = makeSprite(TEX.glow, 0xc060ff, true);
+      beam.scale.set(26, 130, 1);
+      beam.center.set(0.5, 0.1);
+      scene.add(obelisk, ring, beam);
+      rig = { obelisk, ring, beam };
+      altarMap.set(altar, rig);
+    }
+    const pulse = 0.5 + 0.5 * Math.sin(now / 320);
+    rig.obelisk.position.set(altar.x, 23 + Math.sin(altar.bobPhase) * 3, altar.y);
+    rig.obelisk.rotation.y = now / 1400;
+    rig.beam.position.set(altar.x, 8, altar.y);
+    rig.beam.material.opacity = 0.3 + pulse * 0.3;
+    const rs = 64 + pulse * 18;
+    rig.ring.scale.set(rs, rs, 1);
+    rig.ring.material.opacity = 0.45 + pulse * 0.35;
+    rig.ring.position.set(altar.x, 2, altar.y);
+  }
+  for (const [altar, rig] of altarMap) {
+    if (!(R.state.altars || []).includes(altar)) {
+      scene.remove(rig.obelisk, rig.ring, rig.beam);
+      rig.obelisk.geometry.dispose();
+      rig.obelisk.material.dispose();
+      altarMap.delete(altar);
+    }
+  }
+}
+
 // ===== 魅影分身漩渦刃（夜玄掌技） =====
 const spiralMap = new Map();
 function syncSpirals() {
@@ -1207,7 +1290,7 @@ export function applyScene(idx, instant = false) {
   gu.uFogColor.value.setHex(cfg.fogColor);
   gu.uFogNear.value = cfg.fogNear;
   gu.uFogFar.value = cfg.fogFar;
-  gu.uStyle.value = cfgIdx;
+  gu.uStyle.value = cfg.groundStyle; // P19 五場景循環套用三種地面紋理，不再等同場景 index
 
   scene.fog = new THREE.Fog(cfg.fogColor, cfg.fogNear, cfg.fogFar);
 
@@ -1233,7 +1316,7 @@ export function applyScene(idx, instant = false) {
   buildProps(cfg.props);
 }
 
-// P18：套用（或隱藏）目前場景對應的背景相片；獨立成函式供 applyScene 與 engineRenderInner 共用——
+// 套用（或還原）目前場景對應的背景相片；獨立成函式供 applyScene 與 engineRenderInner 共用——
 // 相片是透過 game.js 的 loadImage() 非同步載入，切換場景當下圖片可能還沒下載完成，
 // 所以每幀也要輕量重新檢查一次，圖片一到位就自動補上，不需要等下次切換場景才生效
 function syncBgPhoto(cfgIdx) {
@@ -1241,16 +1324,21 @@ function syncBgPhoto(cfgIdx) {
   const bgImg = bgKey && R.assetImages && R.assetImages[bgKey];
   if (bgImg) {
     if (bgPhotoLoadedKey !== bgKey) {
-      const tex = new THREE.Texture(bgImg);
-      tex.needsUpdate = true;
-      tex.colorSpace = THREE.SRGBColorSpace;
-      bgPhotoMesh.material.map = tex;
-      bgPhotoMesh.material.needsUpdate = true;
+      const old = scene.background;
+      scene.background = makeCoverBackgroundTexture(bgImg);
+      scene.backgroundIntensity = 0.85; // 稍微壓暗照片，維持角色與敵人的可讀性
+      if (old && old.dispose) old.dispose();
       bgPhotoLoadedKey = bgKey;
     }
-    bgPhotoMesh.visible = true;
+    setProceduralWorldVisible(false);
   } else {
-    bgPhotoMesh.visible = false;
+    if (scene.background) {
+      const old = scene.background;
+      scene.background = null;
+      if (old.dispose) old.dispose();
+    }
+    bgPhotoLoadedKey = null;
+    setProceduralWorldVisible(true);
   }
 }
 
@@ -1359,10 +1447,6 @@ function engineRenderInner(dt) {
     celestialSprite.position.set(camCurrent.x + 500, c.height, camCurrent.z + c.dist);
   }
   syncBgPhoto(activeSceneIdx);
-  if (bgPhotoMesh.visible) {
-    // 跟隨攝影機重新置中，永遠鋪在角色腳下的可視地面範圍內（同 groundMesh 的置中邏輯）
-    bgPhotoMesh.position.set(camCurrent.x, 1, camCurrent.z);
-  }
   reseedProps(camCurrent.x, camCurrent.z);
 
   // 實體同步
@@ -1372,6 +1456,7 @@ function engineRenderInner(dt) {
   syncEnemyProjectiles();
   syncDrops();
   syncChests();
+  syncAltars();
   syncSpirals();
   syncOrbiters();
   syncShockwaves();
@@ -1427,6 +1512,12 @@ export function engineReset() {
   shockMap.clear();
   for (const [, rig] of chestMap) scene.remove(rig.glow, rig.ring, rig.beam);
   chestMap.clear();
+  for (const [, rig] of altarMap) {
+    scene.remove(rig.obelisk, rig.ring, rig.beam);
+    rig.obelisk.geometry.dispose();
+    rig.obelisk.material.dispose();
+  }
+  altarMap.clear();
   for (const [, sp] of spiralMap) scene.remove(sp);
   spiralMap.clear();
   for (const sp of orbiterSprites) sp.visible = false;
@@ -1441,39 +1532,19 @@ export function engineReset() {
 
 // Playwright／除錯用：暴露少量內部狀態供自動化測試檢查（不影響任何遊戲邏輯）
 export function __debugState() {
-  let screenCorners = null;
-  if (bgPhotoMesh && camera) {
-    const hw = 1200, hh = 1200; // 平面半寬高（2400x2400 的一半）
-    const localCorners = [
-      new THREE.Vector3(-hw, -hh, 0),
-      new THREE.Vector3(hw, -hh, 0),
-      new THREE.Vector3(hw, hh, 0),
-      new THREE.Vector3(-hw, hh, 0),
-      new THREE.Vector3(0, 0, 0),
-    ];
-    screenCorners = localCorners.map((v) => {
-      const world = v.clone().applyMatrix4(bgPhotoMesh.matrixWorld);
-      const proj = world.clone().project(camera);
-      return { world: world.toArray(), ndc: proj.toArray() };
-    });
-  }
   let celestialNdc = null;
   if (celestialSprite && camera && celestialSprite.visible) {
     celestialNdc = celestialSprite.position.clone().project(camera).toArray();
   }
   return {
-    bgPhotoVisible: bgPhotoMesh ? bgPhotoMesh.visible : null,
+    bgPhotoActive: !!(scene && scene.background),
     bgPhotoLoadedKey,
-    bgPhotoPosition: bgPhotoMesh ? bgPhotoMesh.position.toArray() : null,
-    bgPhotoQuaternion: bgPhotoMesh ? bgPhotoMesh.quaternion.toArray() : null,
-    bgPhotoHasMap: !!(bgPhotoMesh && bgPhotoMesh.material.map),
-    bgPhotoRenderOrder: bgPhotoMesh ? bgPhotoMesh.renderOrder : null,
-    skyMeshRenderOrder: skyMesh ? skyMesh.renderOrder : null,
+    groundVisible: groundMesh ? groundMesh.visible : null,
+    skyVisible: skyMesh ? skyMesh.visible : null,
     cameraPosition: camera ? camera.position.toArray() : null,
     cameraFov: camera ? camera.fov : null,
     celestialPosition: celestialSprite ? celestialSprite.position.toArray() : null,
     celestialNdc,
-    screenCorners,
     activeSceneIdx,
   };
 }
