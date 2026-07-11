@@ -413,7 +413,7 @@ const CHARACTERS = [
     spriteKey: "yexuan",
     conceptKey: "yexuan_concept",
     spriteHeight: 72,
-    spriteFacesLeft: true,
+    spriteFacesLeft: false, // 夜玄立繪原生朝右（另兩位朝左），實機回報面向與移動相反後校正
     cardSrc: "assets/characters/char_purple_400.png",
     fxBasicKey: "yexuan_fx_basic",
     fxUltKey: "yexuan_fx_ult",
